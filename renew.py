@@ -4,7 +4,7 @@ from seleniumbase import SB
 def main():
     proxy_url = os.environ.get("SOCKS5_PROXY")
     
-    # 获取 Buster 插件的绝对路径 (工作流会提前下载好)
+    # 获取 Buster 插件的绝对路径 (工作流已经提取好)
     ext_dir = os.path.abspath("buster_ext") if os.path.exists("buster_ext") else None
     print(f"使用的代理: {proxy_url if proxy_url else '直连'}")
     if ext_dir:
@@ -13,8 +13,11 @@ def main():
     # 启动隐形浏览器，并加载 Buster 插件
     with SB(uc=True, proxy=proxy_url, extension_dir=ext_dir) as sb:
         try:
-            # 插件安装后可能会自动弹出一个欢迎页标签，停顿2秒让它弹完
-            sb.sleep(2)
+            # 插件安装后可能会自动打开一个欢迎页，停顿3秒让它加载完
+            sb.sleep(3)
+            if len(sb.driver.window_handles) > 1:
+                # 强制切回第一个标签页，防止被 Buster 欢迎页抢占焦点
+                sb.switch_to_window(0)
             
             print("1. 正在打开网址...")
             sb.open("https://game4free.net/my-game")
@@ -54,6 +57,9 @@ def main():
                 
                 print("🤖 Buster 正在进行 AI 语音听写破解，请耐心等待 (约需10-20秒)...")
                 sb.switch_to_default_content()
+                
+                # 多等一会儿让 AI 听写完成
+                sb.sleep(10)
             except Exception:
                 print("✅ 运气不错！未检测到图片验证码，当前 IP 直接绿勾通过！")
                 sb.switch_to_default_content()
