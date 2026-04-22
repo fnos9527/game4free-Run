@@ -10,129 +10,58 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: 检出代码
-      uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-    - name: 🛠️ 安装系统底层依赖
-      run: |
-        sudo apt-get update -q
-        sudo apt-get install -y xvfb
+      - name: 🛠️ 安装系统底层依赖
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y xvfb
 
-    - name: 🌐 安装 Xray 并启动 SOCKS5 代理
-      env:
-        VLESS_NODE: ${{ secrets.VLESS_NODE }}
-      run: |
-        # 下载 xray-core
-        wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O xray.zip
-        unzip -q xray.zip -d xray_bin
-        chmod +x xray_bin/xray
-        
-        # 用 Python 解析 VLESS URL 并生成 xray 配置文件
-        python3 - <<'EOF'
-import os, json, urllib.parse
+      - name: 🌐 安装 Xray 并启动 SOCKS5 代理
+        env:
+          VLESS_NODE: ${{ secrets.VLESS_NODE }}
+        run: |
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O xray.zip
+          unzip -q xray.zip -d xray_bin
+          chmod +x xray_bin/xray
+          python3 generate_xray_config.py
+          ./xray_bin/xray -config xray_config.json &
+          sleep 3
+          echo "🔍 测试代理连通性..."
+          curl -s --socks5 127.0.0.1:10808 --max-time 10 https://www.google.com -o /dev/null \
+            && echo "✅ 代理连通正常！" \
+            || echo "⚠️ 代理连通测试失败，请检查节点配置"
 
-url = os.environ["VLESS_NODE"]
-parsed = urllib.parse.urlparse(url)
-params = dict(urllib.parse.parse_qsl(parsed.query))
+      - name: 📥 下载 Buster 插件
+        run: |
+          wget -q "https://github.com/dessant/buster/releases/download/v3.1.2/buster_captcha_solver_for_humans-3.1.2-chrome.zip" -O buster.zip
+          unzip -q buster.zip -d buster_ext
+          echo "✅ Buster 插件下载并解压成功！"
 
-uuid = parsed.username
-host = parsed.hostname
-port = parsed.port or 443
-security = params.get("security", "none")
-net_type = params.get("type", "tcp")
-ws_path = urllib.parse.unquote(params.get("path", "/"))
-sni = params.get("sni", params.get("host", host))
-ws_host = params.get("host", host)
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-# 构建 streamSettings
-stream = {"network": net_type}
+      - name: 🐍 安装 Python 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-if net_type == "ws":
-    stream["wsSettings"] = {
-        "path": ws_path,
-        "headers": {"Host": ws_host}
-    }
+      - name: 🔧 安装 ChromeDriver
+        run: seleniumbase install chromedriver
 
-if security == "tls":
-    stream["security"] = "tls"
-    stream["tlsSettings"] = {"serverName": sni, "allowInsecure": False}
-elif security == "reality":
-    stream["security"] = "reality"
-    stream["realitySettings"] = {
-        "serverName": sni,
-        "fingerprint": params.get("fp", "chrome"),
-        "shortId": params.get("sid", ""),
-        "publicKey": params.get("pbk", ""),
-        "spiderX": params.get("spx", "")
-    }
+      - name: 🚀 执行续期脚本
+        env:
+          SOCKS5_PROXY: "socks5://127.0.0.1:10808"
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
-config = {
-    "log": {"loglevel": "warning"},
-    "inbounds": [{
-        "port": 10808,
-        "listen": "127.0.0.1",
-        "protocol": "socks",
-        "settings": {"auth": "noauth", "udp": True}
-    }],
-    "outbounds": [{
-        "protocol": "vless",
-        "settings": {
-            "vnext": [{
-                "address": host,
-                "port": port,
-                "users": [{"id": uuid, "encryption": "none"}]
-            }]
-        },
-        "streamSettings": stream
-    }]
-}
-
-with open("xray_config.json", "w") as f:
-    json.dump(config, f, indent=2)
-
-print(f"✅ Xray 配置生成成功！{net_type}/{security} → {host}:{port}")
-EOF
-
-        # 后台启动 xray
-        ./xray_bin/xray -config xray_config.json &
-        sleep 3
-        
-        # 验证代理是否通
-        echo "🔍 测试代理连通性..."
-        curl -s --socks5 127.0.0.1:10808 --max-time 10 https://www.google.com -o /dev/null \
-          && echo "✅ 代理连通正常！" \
-          || echo "⚠️ 代理连通测试失败，请检查节点配置"
-
-    - name: 📥 下载 Buster 插件
-      run: |
-        wget -q "https://github.com/dessant/buster/releases/download/v3.1.2/buster_captcha_solver_for_humans-3.1.2-chrome.zip" -O buster.zip
-        unzip -q buster.zip -d buster_ext
-        echo "✅ Buster 插件下载并解压成功！"
-
-    - name: 设置 Python 环境
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-
-    - name: 🐍 安装 Python 依赖
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: 🔧 安装 ChromeDriver
-      run: seleniumbase install chromedriver
-
-    - name: 🚀 执行续期脚本
-      env:
-        # 直接指向本地 xray 转换好的 SOCKS5
-        SOCKS5_PROXY: "socks5://127.0.0.1:10808"
-      run: |
-        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
-
-    - name: 📸 上传运行截图
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: run-screenshots
-        path: "*.png"
-        retention-days: 3
+      - name: 📸 上传运行截图
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: run-screenshots
+          path: "*.png"
+          retention-days: 3
