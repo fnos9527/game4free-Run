@@ -11,7 +11,6 @@ def main():
 
     with SB(uc=True, proxy=proxy_url, extension_dir=ext_dir) as sb:
         try:
-            # 插件欢迎页处理：等待3秒让欢迎页弹完，然后强制切回主网页
             sb.sleep(3)
             if len(sb.driver.window_handles) > 1:
                 sb.switch_to_window(0)
@@ -29,8 +28,6 @@ def main():
             iframe_selector = "iframe[title*='reCAPTCHA']"
             sb.wait_for_element_visible(iframe_selector, timeout=30)
             sb.switch_to_frame(iframe_selector)
-            
-            # 点击复选框
             sb.click(".recaptcha-checkbox-border")
             sb.switch_to_default_content()
             
@@ -38,37 +35,62 @@ def main():
             challenge_iframe = "iframe[title*='recaptcha challenge']"
             
             try:
-                # 动态等待 8 秒钟，看图片挑战框会不会弹出来
                 sb.wait_for_element_visible(challenge_iframe, timeout=8)
                 print("⚠️ 糟糕，弹出了图片验证码！准备使用 Buster 破解...")
                 
-                # 切入图片验证码的 iframe
                 sb.switch_to_frame(challenge_iframe)
                 
                 try:
-                    # 【史诗级核心修复】：绕过 Closed Shadow DOM 的隐形防御！
-                    # 我们不去寻找隐藏的按钮，而是寻找包围按钮的公开外部容器！
                     buster_host_container = ".help-button-holder"
                     sb.wait_for_element_visible(buster_host_container, timeout=15)
                     print("▶️ 成功锁定小黄人外部容器！施展'隔山打牛'点击...")
                     sb.click(buster_host_container)
                     
-                    print("🤖 Buster 正在调用 AI 听写语音，请耐心等待 (约需 15~20 秒)...")
-                    sb.sleep(20) # 给 AI 听写并自动提交留足时间
+                    print("🤖 Buster 正在调用 AI 听写语音，请耐心等待 (约需 30~40 秒)...")
+                    
+                    # ✅ 改进1：动态等待验证完成，而非固定sleep
+                    # Buster 成功后，挑战框会消失；超时则截图存档
+                    for i in range(40):
+                        sb.sleep(1)
+                        try:
+                            # 如果 challenge iframe 已经不可见，说明验证通过了
+                            sb.switch_to_default_content()
+                            if not sb.is_element_visible(challenge_iframe):
+                                print(f"✅ Buster 在第 {i+1} 秒完成了验证！")
+                                break
+                            sb.switch_to_frame(challenge_iframe)
+                        except Exception:
+                            # iframe 消失会抛异常，也代表通过了
+                            sb.switch_to_default_content()
+                            print(f"✅ Buster 在第 {i+1} 秒完成了验证（iframe 已消失）！")
+                            break
+                    else:
+                        print("⏰ 40秒等待结束，Buster 可能未完成，继续尝试后续步骤...")
+                        sb.switch_to_default_content()
+
                 except Exception as e:
                     print(f"❌ 找不到小黄人容器！详细原因: {str(e)}")
                     sb.save_screenshot("error_no_buster_button.png")
-                
-                # 操作完毕切回主页面
-                sb.switch_to_default_content()
+                    sb.switch_to_default_content()
                 
             except Exception:
-                # 如果 8 秒内没弹图片框，说明直接绿勾通过了
                 print("✅ 运气不错！未检测到图片验证码，当前 IP 似乎直接绿勾通过！")
                 sb.switch_to_default_content()
 
+            # ✅ 改进2：处理 "Complete Verification" 按钮状态
+            # 如果按钮是 "Complete Verification"，主动点击它触发最终提交
+            print("检查提交按钮状态...")
+            sb.wait_for_element_visible("#submit-button", timeout=15)
+            
+            btn_value = sb.get_attribute("#submit-button", "value")
+            print(f"当前按钮状态: {btn_value}")
+            
+            if btn_value == "Complete Verification":
+                print("🖱️ 检测到 'Complete Verification' 按钮，主动点击以触发验证提交...")
+                sb.click("#submit-button")
+                sb.sleep(3)
+
             print("等待人机验证最终通过 (最多等待60秒)...")
-            # 验证通过后，按钮的值会变为 Renew
             sb.wait_for_attribute("#submit-button", "value", "Renew", timeout=60)
 
             print("4. 验证通过，点击 Renew 按钮...")
