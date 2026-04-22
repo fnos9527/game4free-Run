@@ -40,14 +40,17 @@ def main():
             print("1. 正在打开网址...")
             page.goto("https://game4free.net/my-game", wait_until="networkidle", timeout=60000)
             
-            print("2. 正在点击人机验证四方框打勾...")
+            print("2. 正在输入框输入 ae86...")
+            # 修复报错：明确指定 id 为 username-input 的输入框
+            page.locator("#username-input").fill("ae86")
+            
+            # 模拟真人停顿1秒钟，再点击验证码
+            page.wait_for_timeout(1000)
+
+            print("3. 正在点击人机验证四方框打勾...")
             # reCAPTCHA 是嵌套在 iframe 里的，定位到该 iframe 并点击复选框
             recaptcha_frame = page.frame_locator("iframe[title*='reCAPTCHA']")
             recaptcha_frame.locator(".recaptcha-checkbox-border").click()
-            
-            print("3. 正在输入框输入 ae86...")
-            # 找到输入框并填入内容
-            page.locator("input").fill("ae86")
             
             print("等待人机验证通过 (最多等待60秒)...")
             # 验证通过后，按钮的文本会从 Complete Verification 变成 Renew
