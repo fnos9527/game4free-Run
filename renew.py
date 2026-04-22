@@ -46,15 +46,17 @@ def main():
                 sb.switch_to_frame(challenge_iframe)
                 
                 try:
-                    # 【核心修复】：使用动态等待！给插件足够的时间把小黄人注入到页面里！
-                    sb.wait_for_element_visible("#solver-button", timeout=15)
-                    print("▶️ 成功找到小黄人按钮，点击启动 AI 自动打码...")
-                    sb.click("#solver-button")
+                    # 【史诗级核心修复】：绕过 Closed Shadow DOM 的隐形防御！
+                    # 我们不去寻找隐藏的按钮，而是寻找包围按钮的公开外部容器！
+                    buster_host_container = ".help-button-holder"
+                    sb.wait_for_element_visible(buster_host_container, timeout=15)
+                    print("▶️ 成功锁定小黄人外部容器！施展'隔山打牛'点击...")
+                    sb.click(buster_host_container)
                     
-                    print("🤖 Buster 正在听写语音，请耐心等待 (约需 15~20 秒)...")
-                    sb.sleep(20) # 给 AI 听写留足时间
+                    print("🤖 Buster 正在调用 AI 听写语音，请耐心等待 (约需 15~20 秒)...")
+                    sb.sleep(20) # 给 AI 听写并自动提交留足时间
                 except Exception as e:
-                    print(f"❌ 等了15秒还是找不到/点不到小黄人按钮！详细原因: {str(e)}")
+                    print(f"❌ 找不到小黄人容器！详细原因: {str(e)}")
                     sb.save_screenshot("error_no_buster_button.png")
                 
                 # 操作完毕切回主页面
