@@ -13,15 +13,20 @@ jobs:
     - name: 检出代码
       uses: actions/checkout@v4
 
-    - name: 🛠️ 安装系统底层依赖 (虚拟显示器)
+    - name: 🛠️ 安装系统底层依赖 (虚拟显示器与解压工具)
       run: |
         sudo apt-get update -q
-        sudo apt-get install -y xvfb
+        sudo apt-get install -y xvfb p7zip-full
 
-    - name: 📥 下载免费开源 AI 破解插件 (Buster)
+    - name: 📥 从谷歌插件商店拉取 Buster 插件
       run: |
-        wget -q "https://github.com/dessant/buster/releases/download/v2.0.1/buster-extension-2.0.1-chrome.zip" -O buster.zip
-        unzip -q buster.zip -d buster_ext
+        # 直接通过 Chrome 官方接口拉取 Buster 最新版 crx 文件
+        wget -q "https://clients2.google.com/service/update2/crx?response=redirect&os=win&arch=x86-64&os_arch=x86-64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=114.0.5735.199&lang=en-US&acceptformat=crx2,crx3&x=id%3Dmpbjkejclgfgadiemmefgebjfooflfhl%26installsource%3Dondemand%26uc" -O buster.crx
+        # 使用 7z 强制解压 crx 文件包
+        7z x buster.crx -obuster_ext > /dev/null
+        # 移除会导致加载失败的签名文件夹
+        rm -rf buster_ext/_metadata
+        echo "✅ Buster 插件下载并解压成功！"
 
     - name: 设置 Python 环境
       uses: actions/setup-python@v5
