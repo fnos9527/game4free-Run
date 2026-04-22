@@ -1,5 +1,69 @@
 import os
+import time
 from seleniumbase import SB
+
+def solve_recaptcha(sb):
+    """处理 reCAPTCHA，返回 True=成功, False=被封锁"""
+    iframe_selector = "iframe[title*='reCAPTCHA']"
+    sb.wait_for_element_visible(iframe_selector, timeout=30)
+    sb.switch_to_frame(iframe_selector)
+    sb.click(".recaptcha-checkbox-border")
+    sb.switch_to_default_content()
+    
+    print("等待谷歌验证码响应...")
+    challenge_iframe = "iframe[title*='recaptcha challenge']"
+    
+    try:
+        sb.wait_for_element_visible(challenge_iframe, timeout=8)
+        print("⚠️ 弹出了图片验证码，准备使用 Buster 破解...")
+        sb.switch_to_frame(challenge_iframe)
+
+        # ✅ 优先检测是否已经被 Google 封锁（Try again later 弹窗）
+        if sb.is_element_visible(".rc-doscaptcha-header") or \
+           sb.is_text_visible("Try again later") or \
+           sb.is_text_visible("sending automated queries"):
+            print("🚫 当前 IP 已被 Google 封锁！显示 'Try again later'")
+            sb.save_screenshot("blocked_by_google.png")
+            sb.switch_to_default_content()
+            return False
+
+        buster_host_container = ".help-button-holder"
+        sb.wait_for_element_visible(buster_host_container, timeout=15)
+        print("▶️ 成功锁定 Buster 按钮，点击中...")
+        sb.click(buster_host_container)
+        print("🤖 Buster AI 语音识别中，动态等待最多 50 秒...")
+
+        # 动态等待：每秒检测一次封锁状态 + 完成状态
+        for i in range(50):
+            sb.sleep(1)
+            # 先检测是否被封锁
+            try:
+                sb.switch_to_frame(challenge_iframe)
+                if sb.is_element_visible(".rc-doscaptcha-header") or \
+                   sb.is_text_visible("Try again later"):
+                    print(f"🚫 第{i+1}秒：Buster 触发了 Google 封锁！IP 已被拉黑。")
+                    sb.save_screenshot("blocked_after_buster.png")
+                    sb.switch_to_default_content()
+                    return False
+                sb.switch_to_default_content()
+            except Exception:
+                pass
+
+            # 检测 challenge iframe 是否消失（验证通过标志）
+            sb.switch_to_default_content()
+            if not sb.is_element_visible(challenge_iframe):
+                print(f"✅ 第{i+1}秒：Buster 验证完成！")
+                return True
+
+        print("⏰ 50秒超时，Buster 未能完成验证")
+        sb.switch_to_default_content()
+        return False
+
+    except Exception:
+        print("✅ 未弹出图片验证码，直接绿勾通过！")
+        sb.switch_to_default_content()
+        return True
+
 
 def main():
     proxy_url = os.environ.get("SOCKS5_PROXY")
@@ -7,7 +71,9 @@ def main():
     
     print(f"使用的代理: {proxy_url if proxy_url else '直连'}")
     if ext_dir:
-        print("🧩 已成功挂载 Buster 免费 AI 自动打码插件！")
+        print("🧩 已成功挂载 Buster 插件！")
+
+    MAX_RETRIES = 3  # IP被封时最多重试次数（换代理后有意义）
 
     with SB(uc=True, proxy=proxy_url, extension_dir=ext_dir) as sb:
         try:
@@ -17,93 +83,48 @@ def main():
             
             print("1. 正在打开网址...")
             sb.open("https://game4free.net/my-game")
-            
-            print("等待页面加载...")
             sb.wait_for_element_visible("#username-input", timeout=30)
             
-            print("2. 正在输入框输入 ae86...")
+            print("2. 输入用户名 ae86...")
             sb.type("#username-input", "ae86")
             
-            print("3. 正在点击 reCAPTCHA 人机验证...")
-            iframe_selector = "iframe[title*='reCAPTCHA']"
-            sb.wait_for_element_visible(iframe_selector, timeout=30)
-            sb.switch_to_frame(iframe_selector)
-            sb.click(".recaptcha-checkbox-border")
-            sb.switch_to_default_content()
-            
-            print("等待谷歌验证码响应...")
-            challenge_iframe = "iframe[title*='recaptcha challenge']"
-            
-            try:
-                sb.wait_for_element_visible(challenge_iframe, timeout=8)
-                print("⚠️ 糟糕，弹出了图片验证码！准备使用 Buster 破解...")
-                
-                sb.switch_to_frame(challenge_iframe)
-                
-                try:
-                    buster_host_container = ".help-button-holder"
-                    sb.wait_for_element_visible(buster_host_container, timeout=15)
-                    print("▶️ 成功锁定小黄人外部容器！施展'隔山打牛'点击...")
-                    sb.click(buster_host_container)
-                    
-                    print("🤖 Buster 正在调用 AI 听写语音，请耐心等待 (约需 30~40 秒)...")
-                    
-                    # ✅ 改进1：动态等待验证完成，而非固定sleep
-                    # Buster 成功后，挑战框会消失；超时则截图存档
-                    for i in range(40):
-                        sb.sleep(1)
-                        try:
-                            # 如果 challenge iframe 已经不可见，说明验证通过了
-                            sb.switch_to_default_content()
-                            if not sb.is_element_visible(challenge_iframe):
-                                print(f"✅ Buster 在第 {i+1} 秒完成了验证！")
-                                break
-                            sb.switch_to_frame(challenge_iframe)
-                        except Exception:
-                            # iframe 消失会抛异常，也代表通过了
-                            sb.switch_to_default_content()
-                            print(f"✅ Buster 在第 {i+1} 秒完成了验证（iframe 已消失）！")
-                            break
-                    else:
-                        print("⏰ 40秒等待结束，Buster 可能未完成，继续尝试后续步骤...")
-                        sb.switch_to_default_content()
+            print("3. 处理 reCAPTCHA...")
+            captcha_passed = solve_recaptcha(sb)
 
-                except Exception as e:
-                    print(f"❌ 找不到小黄人容器！详细原因: {str(e)}")
-                    sb.save_screenshot("error_no_buster_button.png")
-                    sb.switch_to_default_content()
-                
-            except Exception:
-                print("✅ 运气不错！未检测到图片验证码，当前 IP 似乎直接绿勾通过！")
-                sb.switch_to_default_content()
+            if not captcha_passed:
+                # ✅ IP被封时，给出明确提示而非死等
+                print("=" * 60)
+                print("❌ 验证失败：当前出口 IP 已被 Google reCAPTCHA 封锁！")
+                print("   解决办法：")
+                print("   1. 更换住宅代理 IP（Residential Proxy）")
+                print("   2. 等待 GitHub Actions 分配新 IP 后重试")
+                print("   3. 接入 2captcha 等付费打码服务")
+                print("=" * 60)
+                sb.save_screenshot("ip_blocked_final.png")
+                raise Exception("IP 被 Google 封锁，无法完成 reCAPTCHA 验证")
 
-            # ✅ 改进2：处理 "Complete Verification" 按钮状态
-            # 如果按钮是 "Complete Verification"，主动点击它触发最终提交
-            print("检查提交按钮状态...")
+            # 检查按钮状态
             sb.wait_for_element_visible("#submit-button", timeout=15)
-            
             btn_value = sb.get_attribute("#submit-button", "value")
             print(f"当前按钮状态: {btn_value}")
-            
+
             if btn_value == "Complete Verification":
-                print("🖱️ 检测到 'Complete Verification' 按钮，主动点击以触发验证提交...")
+                print("🖱️ 点击 Complete Verification...")
                 sb.click("#submit-button")
                 sb.sleep(3)
 
-            print("等待人机验证最终通过 (最多等待60秒)...")
+            print("4. 等待按钮变为 Renew（最多60秒）...")
             sb.wait_for_attribute("#submit-button", "value", "Renew", timeout=60)
 
-            print("4. 验证通过，点击 Renew 按钮...")
+            print("5. 点击 Renew 按钮...")
             sb.click("#submit-button")
 
-            print("5. 正在确认续期结果...")
             sb.wait_for_text("The server has been renewed.", timeout=30)
-            
-            print("🎉 恭喜！The server has been renewed. 整个续期完成。")
+            print("🎉 续期成功！The server has been renewed.")
             sb.save_screenshot("success_screenshot.png")
 
         except Exception as e:
-            print(f"❌ 运行过程中发生致命错误: {str(e)}")
+            print(f"❌ 致命错误: {str(e)}")
             try:
                 sb.switch_to_default_content()
             except:
