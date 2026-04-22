@@ -34,34 +34,36 @@ def main():
             sb.click(".recaptcha-checkbox-border")
             sb.switch_to_default_content()
             
-            # 等待 4 秒钟，观察谷歌是直接给绿勾，还是弹出图片验证码
-            sb.sleep(4)
-
-            print("检查是否被谷歌拦截并弹出图片验证码...")
+            print("等待谷歌验证码响应...")
             challenge_iframe = "iframe[title*='recaptcha challenge']"
             
-            # 使用精准的可见性判断，代替之前的 try...except
-            if sb.is_element_visible(challenge_iframe):
+            try:
+                # 动态等待 8 秒钟，看图片挑战框会不会弹出来
+                sb.wait_for_element_visible(challenge_iframe, timeout=8)
                 print("⚠️ 糟糕，弹出了图片验证码！准备使用 Buster 破解...")
+                
                 # 切入图片验证码的 iframe
                 sb.switch_to_frame(challenge_iframe)
                 
-                # 【关键修复】：强制等待 3 秒钟，给 Buster 插件时间把小黄人按钮注入到页面中！
-                sb.sleep(3)
-                
-                if sb.is_element_visible("#solver-button"):
+                try:
+                    # 【核心修复】：使用动态等待！给插件足够的时间把小黄人注入到页面里！
+                    sb.wait_for_element_visible("#solver-button", timeout=15)
                     print("▶️ 成功找到小黄人按钮，点击启动 AI 自动打码...")
                     sb.click("#solver-button")
-                    print("🤖 Buster 正在听写语音，请耐心等待 (约需 15 秒)...")
-                    sb.sleep(15) # 给 AI 听写留足时间
-                else:
-                    print("❌ 错误：找不到 Buster 小黄人按钮！(可能是插件未生效或页面未完全加载)")
+                    
+                    print("🤖 Buster 正在听写语音，请耐心等待 (约需 15~20 秒)...")
+                    sb.sleep(20) # 给 AI 听写留足时间
+                except Exception as e:
+                    print(f"❌ 等了15秒还是找不到/点不到小黄人按钮！详细原因: {str(e)}")
                     sb.save_screenshot("error_no_buster_button.png")
                 
                 # 操作完毕切回主页面
                 sb.switch_to_default_content()
-            else:
+                
+            except Exception:
+                # 如果 8 秒内没弹图片框，说明直接绿勾通过了
                 print("✅ 运气不错！未检测到图片验证码，当前 IP 似乎直接绿勾通过！")
+                sb.switch_to_default_content()
 
             print("等待人机验证最终通过 (最多等待60秒)...")
             # 验证通过后，按钮的值会变为 Renew
