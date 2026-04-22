@@ -8,7 +8,8 @@ on:
 
 jobs:
   renew_server:
-    runs-on: ubuntu-latest
+    # 【重要修改】：将 ubuntu-latest 改为 ubuntu-22.04，解决 libasound2 依赖报错问题
+    runs-on: ubuntu-22.04
 
     steps:
     - name: 检出代码
