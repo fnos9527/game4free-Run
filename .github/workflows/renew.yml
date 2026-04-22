@@ -13,15 +13,20 @@ jobs:
     - name: 检出代码
       uses: actions/checkout@v4
 
+    - name: 🛠️ 安装系统底层依赖 (虚拟显示器)
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y xvfb
+
+    - name: 📥 下载免费开源 AI 破解插件 (Buster)
+      run: |
+        wget -q "https://github.com/dessant/buster/releases/download/v2.0.1/buster-extension-2.0.1-chrome.zip" -O buster.zip
+        unzip -q buster.zip -d buster_ext
+
     - name: 设置 Python 环境
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
-
-    - name: 🛠️ 安装系统底层依赖 (重点：模拟真实物理显示器)
-      run: |
-        sudo apt-get update -q
-        sudo apt-get install -y xvfb
 
     - name: 🐍 安装 Python 依赖
       run: |
@@ -31,16 +36,15 @@ jobs:
     - name: 🔧 安装 ChromeDriver 驱动
       run: seleniumbase install chromedriver
 
-    - name: 🚀 执行续期脚本 (在 Xvfb 虚拟屏幕中运行)
+    - name: 🚀 执行续期脚本
       env:
         SOCKS5_PROXY: ${{ secrets.SOCKS5_PROXY }}
       run: |
-        # 最核心的魔法：使用 xvfb-run 启动，让浏览器以为自己跑在真实的电脑屏幕上！
         xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
-    - name: 📸 上传运行截图 (排错与确认用)
+    - name: 📸 上传运行截图
       uses: actions/upload-artifact@v4
-      if: always() # 无论成功还是失败，都上传最后一步的截图
+      if: always()
       with:
         name: run-screenshots
         path: "*.png"
