@@ -1,14 +1,12 @@
 name: Auto Renew Game4Free Server
 
 on:
-  workflow_dispatch: # 允许在 GitHub 网页上手动点击运行 (方便测试)
+  workflow_dispatch:
   schedule:
-    # 定时任务：每天 UTC 时间 00:00 运行一次 (相当于北京时间早上 8:00)
     - cron: '0 0 * * *'
 
 jobs:
   renew_server:
-    # 【重要修改】：将 ubuntu-latest 改为 ubuntu-22.04，解决 libasound2 依赖报错问题
     runs-on: ubuntu-22.04
 
     steps:
@@ -20,25 +18,30 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: 安装依赖
+    - name: 🛠️ 安装系统底层依赖 (重点：模拟真实物理显示器)
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y xvfb
+
+    - name: 🐍 安装 Python 依赖
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        # 安装 Playwright 对应的浏览器内核及其系统依赖
-        playwright install chromium
-        playwright install-deps chromium
 
-    - name: 执行续期脚本
+    - name: 🔧 安装 ChromeDriver 驱动
+      run: seleniumbase install chromedriver
+
+    - name: 🚀 执行续期脚本 (在 Xvfb 虚拟屏幕中运行)
       env:
-        # 注入你在图中配置的变量 SOCKS5_PROXY
         SOCKS5_PROXY: ${{ secrets.SOCKS5_PROXY }}
       run: |
-        python renew.py
+        # 最核心的魔法：使用 xvfb-run 启动，让浏览器以为自己跑在真实的电脑屏幕上！
+        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
 
-    - name: 上传错误截图 (如果运行失败)
+    - name: 📸 上传运行截图 (排错与确认用)
       uses: actions/upload-artifact@v4
-      if: failure() # 只有失败时才执行此步，用于排查是否被卡在图片验证码
+      if: always() # 无论成功还是失败，都上传最后一步的截图
       with:
-        name: error-screenshot
-        path: error_screenshot.png
+        name: run-screenshots
+        path: "*.png"
         retention-days: 3
