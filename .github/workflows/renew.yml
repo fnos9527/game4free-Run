@@ -13,19 +13,16 @@ jobs:
     - name: 检出代码
       uses: actions/checkout@v4
 
-    - name: 🛠️ 安装系统底层依赖 (虚拟显示器与解压工具)
+    - name: 🛠️ 安装系统底层依赖 (虚拟显示器)
       run: |
         sudo apt-get update -q
-        sudo apt-get install -y xvfb p7zip-full
+        sudo apt-get install -y xvfb
 
-    - name: 📥 从谷歌插件商店拉取 Buster 插件
+    - name: 📥 下载最新版 Buster 免费 AI 破解插件
       run: |
-        # 直接通过 Chrome 官方接口拉取 Buster 最新版 crx 文件
-        wget -q "https://clients2.google.com/service/update2/crx?response=redirect&os=win&arch=x86-64&os_arch=x86-64&nacl_arch=x86-64&prod=chromecrx&prodchannel=&prodversion=114.0.5735.199&lang=en-US&acceptformat=crx2,crx3&x=id%3Dmpbjkejclgfgadiemmefgebjfooflfhl%26installsource%3Dondemand%26uc" -O buster.crx
-        # 使用 7z 强制解压 crx 文件包
-        7z x buster.crx -obuster_ext > /dev/null
-        # 移除会导致加载失败的签名文件夹
-        rm -rf buster_ext/_metadata
+        # 直接使用作者 GitHub 最新的 v3.1.2 版本官方 zip 包，绝对不会再失效
+        wget -q "https://github.com/dessant/buster/releases/download/v3.1.2/buster_captcha_solver_for_humans-3.1.2-chrome.zip" -O buster.zip
+        unzip -q buster.zip -d buster_ext
         echo "✅ Buster 插件下载并解压成功！"
 
     - name: 设置 Python 环境
