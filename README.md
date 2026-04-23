@@ -1,4 +1,22 @@
 # game4free-Run
+cron-job.org触发URL 填：
+```
+https://api.github.com/repos/fnos9527/game4free-Run/actions/workflows/renew.yml/dispatches
+```
+Header 加：
+
+Authorization: Bearer 你的GitHub_Token
+
+Content-Type: application/json
+
+Body 填：
+```
+{"ref":"main"}
+```
+
+
+
+
 每天凌晨0点(定时触发) 或 手动触发
          ↓
 1. 检出代码 (把仓库文件下载到运行环境)
