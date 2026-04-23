@@ -14,9 +14,8 @@ Body 填：
 {"ref":"main"}
 ```
 
-
-
-
+流程图
+```
 每天凌晨0点(定时触发) 或 手动触发
          ↓
 1. 检出代码 (把仓库文件下载到运行环境)
@@ -44,6 +43,7 @@ Body 填：
    └─ 确认出现 "The server has been renewed."
          ↓
 7. 上传截图到 Artifacts (成功或失败都保存，方便排查)
+```
 
 唯一变量Secret名称
 VLESS_NODE
