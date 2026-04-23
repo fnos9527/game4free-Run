@@ -3,7 +3,7 @@ name: Auto Renew Game4Free Server
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'
+    - cron: ''
 
 jobs:
   renew_server:
