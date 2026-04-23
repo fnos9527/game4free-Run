@@ -2,22 +2,17 @@ name: Auto Renew Game4Free Server
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: ''
 
 jobs:
   renew_server:
     runs-on: ubuntu-22.04
-
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-
       - name: 🛠️ 安装系统底层依赖
         run: |
           sudo apt-get update -q
           sudo apt-get install -y xvfb
-
       - name: 🌐 安装 Xray 并启动 SOCKS5 代理
         env:
           VLESS_NODE: ${{ secrets.VLESS_NODE }}
@@ -32,32 +27,26 @@ jobs:
           curl -s --socks5 127.0.0.1:10808 --max-time 10 https://www.google.com -o /dev/null \
             && echo "✅ 代理连通正常！" \
             || echo "⚠️ 代理连通测试失败，请检查节点配置"
-
       - name: 📥 下载 Buster 插件
         run: |
           wget -q "https://github.com/dessant/buster/releases/download/v3.1.2/buster_captcha_solver_for_humans-3.1.2-chrome.zip" -O buster.zip
           unzip -q buster.zip -d buster_ext
           echo "✅ Buster 插件下载并解压成功！"
-
       - name: 设置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
       - name: 🐍 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: 🔧 安装 ChromeDriver
         run: seleniumbase install chromedriver
-
       - name: 🚀 执行续期脚本
         env:
           SOCKS5_PROXY: "socks5://127.0.0.1:10808"
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python renew.py
-
       - name: 📸 上传运行截图
         uses: actions/upload-artifact@v4
         if: always()
