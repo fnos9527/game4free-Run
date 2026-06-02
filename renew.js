@@ -1,190 +1,45 @@
-const { chromium } = require('playwright');
-const { exec, execSync } = require('child_process');
-const fs = require('fs');
+const axios = require('axios');
 
-// 启动 Xray 代理中转
-function startXrayProxy(vlessLink) {
-    if (!vlessLink) {
-        console.log('⚠️ 未检测到 MY_VLESS_PROXY 变量，将不使用代理运行。');
-        return false;
-    }
-    console.log('正在下载 Xray-core...');
-    try {
-        execSync('curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip', { stdio: 'ignore' });
-        execSync('unzip -o xray.zip xray', { stdio: 'ignore' });
-        execSync('chmod +x xray', { stdio: 'ignore' });
-    } catch (err) {
-        return false;
-    }
+// 1. 从 GitHub Environment 变量中读取 Cookie
+// 如果你在本地测试，可以先直接把你的 Cookie 字符串贴在下面的引号里
+const COOKIE_STRING = process.env.MY_WEBSITE_COOKIE || `_ga=GA1.1.1783501504.1780363246; _ga_0P7PP0R7K3=GS2.1.s1780380751$o4$g1$t1780382968$j35$l0$h0; XSRF-TOKEN=eyJpdiI6IndnM01xM0pZUG1RWEx2TmZLK3paZkE9PSIsInZhbHVlIjoiOGl4aGFFUlg2ejZSa05hcWt6SXdQbTkreW1MY05vQ0EvRDRTbitnZWxGZndIcG5XVmNNNXFZSTVTbkYxTC8zU09xeXRLTmZxajN4OU9hUk1HeG9nMlhzUVpBZW1hUkJHRk5PWlI5TUhMbzdqNkJ4Sk9QZSsvK1VJZ0VtNkRrZGEiLCJtYWMiOiIzOTNjMTljMGZlYjM0NTBiNjVkODk3MzAxNjk5ZTAzYTgzZTcyMmYzM2IyODYyNmJlNDRjMzQzYmZlNmVmMjdhIiwidGFnIjoiIn0%3D; pelican_session=eyJpdiI6IlpvVFBEM3lPa21YWDFNM1Qrclhja2c9PSIsInZhbHVlIjoicGNXcW1xMjA1RDExUEpxYkFDc083NmZlY2N1dWFzTVUrSmZyWmxKVmxob1JPeWlXVktYSm8rcEpMS3o3UlRDN2g5QTNUcXlkL2ovWFQ2OE9IVGIrckhnd3NOeDFEZkFlSDhQbHloZm9TcnB3bFRQMjBYNlJDL0pZVVhncVJOTVYiLCJtYWMiOiI3NzE2NDVmZTJkZTFiNzhiNWU5MTFlNTA0NzFiOWFmNTljYjRhMWI0ZDRlOTY3ZWI1MDQ5NTQ5OWIwNzJmOThjIiwidGFnIjoiIn0%3D`;
+
+async function renewServer() {
+    console.log('🚀 开始直接发送底层网络请求进行续期...');
 
     try {
-        const url = new URL(vlessLink);
-        const uuid = url.username;
-        const [host, port] = url.host.split(':');
-        const params = url.searchParams;
-
-        const config = {
-            inbounds: [{
-                port: 10808, listen: "127.0.0.1", protocol: "socks", settings: { auth: "noauth", udp: true }
-            }],
-            outbounds: [{
-                protocol: "vless",
-                settings: {
-                    vnext: [{ address: host, port: parseInt(port || "443"), users: [{ id: uuid, encryption: "none" }] }]
-                },
-                streamSettings: {
-                    network: params.get("type") || "tcp",
-                    security: params.get("security") || "none",
-                    tlsSettings: { serverName: params.get("sni") || host },
-                    wsSettings: params.get("type") === "ws" ? { path: decodeURIComponent(params.get("path") || "/") } : undefined
-                }
-            }]
-        };
-        fs.writeFileSync('config.json', JSON.stringify(config, null, 2));
-    } catch (err) {
-        return false;
-    }
-
-    const xrayProcess = exec('./xray -config config.json > xray.log 2>&1');
-    xrayProcess.unref();
-    execSync('sleep 3');
-    return true;
-}
-
-async function extractServerTime(page) {
-    try {
-        const pageText = await page.innerText('body');
-        const match = pageText.match(/\d{2}:\d{2}:\d{2}/);
-        return match ? match[0] : '无法提取具体数字';
-    } catch (e) {
-        return '获取失败';
-    }
-}
-
-(async () => {
-    const vlessLink = process.env.MY_VLESS_PROXY;
-    const isProxyActive = startXrayProxy(vlessLink);
-
-    const launchOptions = {
-        headless: false, 
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
-            '--blink-settings=imagesEnabled=true',
-            '--disable-blink-features=AutomationControlled'
-        ]
-    };
-
-    if (isProxyActive) {
-        launchOptions.proxy = { server: 'socks5://127.0.0.1:10808' };
-    }
-
-    const browser = await chromium.launch(launchOptions);
-    const context = await browser.newContext({
-        viewport: { width: 1366, height: 768 },
-        locale: 'en-US',
-        timezoneId: 'Europe/Amsterdam'
-    });
-
-    await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        window.chrome = { runtime: {} };
-    });
-    
-    const page = await context.newPage();
-
-    try {
-        console.log('第一步：正在打开目标网页...');
-        await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
-        
-        await page.waitForTimeout(4000);
-        const initialTime = await extractServerTime(page);
-        console.log(`⏱️ 网页初始剩余时间: ${initialTime}`);
-        await page.screenshot({ path: '1_initial_status.png' });
-
-        console.log('第二步：点击 + ADD 90 MIN 按钮唤出弹窗...');
-        let addBtn = page.locator('text="+ ADD 90 MIN"').first();
-        if (await addBtn.count() === 0) {
-            addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
-        }
-        await addBtn.click();
-        await page.waitForTimeout(4000); // 等待弹窗完全展开
-        await page.screenshot({ path: '2_after_click_popup.png' });
-
-        console.log('第三步：解密封印！强行注入重写前端倒计时与隐藏组件...');
-        
-        // 🌟 在网页环境执行“降维打击”：直接把阻碍我们点击的遮罩层、广告倒计时在前端干掉
-        await page.evaluate(() => {
-            console.log("开始强制扫描并清除全网页的广告等待限制...");
-            
-            // 1. 如果有隐藏的按钮（比如类名里带有 renew, submit, confirm, ad-button 的），强行让它们显示出来
-            const allElements = document.querySelectorAll('button, a, div, input, form');
-            allElements.forEach(el => {
-                const text = (el.innerText || "").toLowerCase();
-                const idOrClass = ((el.id || "") + " " + (el.className || "")).toLowerCase();
-                
-                // 解锁可能被禁用的按钮
-                if (el.hasAttribute('disabled')) {
-                    el.removeAttribute('disabled');
-                    el.style.border = "5px solid red"; // 加上红框标记
-                }
-                
-                // 如果隐藏了，强行展开
-                if (el.style.display === 'none' || el.style.visibility === 'hidden') {
-                    el.style.setProperty('display', 'block', 'important');
-                    el.style.setProperty('visibility', 'visible', 'important');
-                }
-            });
-
-            // 2. 很多网站是通过 setTimeout 或者 setInterval 倒计时的，我们尝试寻找并清除它们
-            // 或者直接寻找可能存在的全局变量（比如叫 counter, timeLeft, seconds 等）直接改成 0
-            for (let i = 1; i < 1000; i++) {
-                window.clearInterval(i);
-                window.clearTimeout(i);
+        const response = await axios.get('https://g4f.gg/myserverbbr', {
+            headers: {
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                'cache-control': 'max-age=0',
+                'cookie': COOKIE_STRING,
+                'referer': 'https://g4f.gg/myserverbbr',
+                'upgrade-insecure-requests': '1',
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
             }
-
-            // 3. 强行模拟广告“加载完成”后可能调用的通用方法
-            const typicalCallbacks = ['onAdLoaded', 'showRenewBtn', 'unlockButton', 'adComplete', 'startRenewal'];
-            typicalCallbacks.forEach(funcName => {
-                if (typeof window[funcName] === 'function') {
-                    console.log(`发现潜在解禁函数: ${funcName}，正在强制执行...`);
-                    try { window[funcName](); } catch(e){}
-                }
-            });
         });
 
-        console.log('全面破坏前端限制后，尝试地毯式轰炸点击可能新出现的真实续期按钮...');
-        // 寻找弹窗中所有看起来像续期、提交、确认或者带有数字的按钮进行盲点
-        await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
-            btns.forEach(b => {
-                const text = b.innerText || b.value || "";
-                // 排除最开始的主按钮，只点弹窗里的新按钮
-                if (!text.includes("+ ADD 90 MIN")) {
-                    console.log(`正在盲点按钮: ${text}`);
-                    b.click();
-                }
-            });
-        });
+        console.log('✅ 请求发送成功！正在解析服务器当前状态...');
 
-        console.log('原地等待 15 秒观察数据是否刷新入库...');
-        await page.waitForTimeout(15000);
-        await page.screenshot({ path: '3_after_captcha_attempt.png' });
+        // 从返回的 HTML 页面中用正则捞出剩余时间，用来验证是否真的续期成功
+        const html = response.data;
+        
+        // 匹配类似于 01:58:14 格式的倒计时文本
+        const timeRegex = /(\d{2}):(\d{2}):(\d{2})/;
+        const match = html.match(timeRegex);
 
-        // 重新刷新一下页面，确保看到的是最干净、最新写入的时间
-        console.log('重新刷新页面查看最终状态...');
-        await page.reload({ waitUntil: 'networkidle' });
-        await page.waitForTimeout(4000);
-        await page.screenshot({ path: '4_final_result.png' });
-
-        console.log('第四步：检查续期后的时间状态...');
-        const endTime = await extractServerTime(page);
-        console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
+        if (match) {
+            console.log(`🎉 续期检查完毕！当前服务器剩余时间为: ${match[0]}`);
+        } else {
+            console.log('⚠ 未能在页面中匹配到倒计时格式，可能需要重新登录或更新 Cookie。');
+            // 打印一部分网页文本方便排查
+            console.log('页面片段：', html.substring(0, 500));
+        }
 
     } catch (error) {
-        console.error('流程中遭遇异常中止:', error);
-    } finally {
-        await browser.close();
-        try { execSync('pkill -f xray'); } catch(e){}
+        console.error('❌ 请求失败，错误信息:', error.message);
     }
-})();
+}
+
+renewServer();
