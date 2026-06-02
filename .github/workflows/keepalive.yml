@@ -38,7 +38,7 @@ jobs:
           PROXY_LINK: ${{ secrets.PROXY_LINK }}
         run: |
           python3 << 'PYEOF'
-          import os, json, re
+          import os, json
           from urllib.parse import urlparse, parse_qs
 
           raw = os.environ['PROXY_LINK'].strip()
@@ -48,7 +48,7 @@ jobs:
           def q(key, default=''):
               return qs.get(key, [default])[0]
 
-          proto    = u.scheme          # vless / vmess / trojan
+          proto    = u.scheme
           address  = u.hostname
           port     = int(u.port)
           security = q('security', 'none')
@@ -58,14 +58,13 @@ jobs:
 
           print(f"协议: {proto}  地址: {address}:{port}  网络: {network}  安全: {security}")
 
-          # ── TLS 设置（新版 xray 用 allowInsecure 布尔值，不用 pinnedPeerCertSha256）
+          # xray v26 用 pinnedPeerCertificateSha256:[] 替代已删除的 allowInsecure
           tls_cfg = {
               "serverName": sni or address,
               "fingerprint": fp,
-              "allowInsecure": True
+              "pinnedPeerCertificateSha256": []
           }
 
-          # ── 流量设置
           stream = {"network": network, "security": security}
           if security == "tls":
               stream["tlsSettings"] = tls_cfg
@@ -87,12 +86,11 @@ jobs:
           elif network == "grpc":
               stream["grpcSettings"] = {"serviceName": q('serviceName', '')}
 
-          # ── 出站配置
           if proto == "vless":
               outbound_settings = {
                   "vnext": [{
                       "address": address, "port": port,
-                      "users": [{"id": u.username, "encryption": "none", "flow": q('flow','')}]
+                      "users": [{"id": u.username, "encryption": "none", "flow": q('flow', '')}]
                   }]
               }
           elif proto == "vmess":
@@ -103,7 +101,7 @@ jobs:
               outbound_settings = {
                   "vnext": [{
                       "address": address, "port": port,
-                      "users": [{"id": info['id'], "alterId": int(info.get('aid',0)), "security": info.get('scy','auto')}]
+                      "users": [{"id": info['id'], "alterId": int(info.get('aid', 0)), "security": info.get('scy', 'auto')}]
                   }]
               }
           elif proto == "trojan":
@@ -130,12 +128,10 @@ jobs:
           print("✅ Xray config 已写入")
           PYEOF
 
-          # 启动 xray
           nohup /usr/local/xray/xray run -c /tmp/xray_config.json > /tmp/xray.log 2>&1 &
           echo "Xray PID: $!"
           sleep 4
 
-          # 验证
           echo "--- xray 日志 ---"
           cat /tmp/xray.log
           echo "-----------------"
