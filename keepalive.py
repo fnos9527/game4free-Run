@@ -1,9 +1,34 @@
 #!/usr/bin/env python3
 import asyncio
+import os
 import re
+import shutil
 
 TARGET = "https://g4f.gg/myserverbbr"
 SOCKS5 = "socks5://127.0.0.1:10808"
+
+
+def find_chrome() -> str:
+    """找 Chrome/Chromium 可执行文件路径"""
+    candidates = [
+        os.environ.get("CHROME_BIN", ""),
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p):
+            print(f"  找到浏览器: {p}")
+            return p
+    # fallback: shutil.which
+    for name in ("google-chrome", "google-chrome-stable", "chromium-browser", "chromium"):
+        p = shutil.which(name)
+        if p:
+            print(f"  找到浏览器(which): {p}")
+            return p
+    raise FileNotFoundError("找不到 Chrome/Chromium，请确认已安装")
 
 
 def parse_seconds(t: str) -> int:
@@ -38,9 +63,12 @@ async def main():
     print("🎮  Gaming4Free Keepalive  (nodriver + xray socks5)")
     print("=" * 55)
 
+    chrome_path = find_chrome()
+
     browser = await uc.start(
         sandbox=False,
         headless=True,
+        browser_executable_path=chrome_path,
         browser_args=[
             "--disable-gpu",
             "--window-size=1280,720",
