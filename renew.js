@@ -116,49 +116,72 @@ async function extractServerTime(page) {
         }
         await addBtn.click();
         
-        console.log('等待弹窗和 Cloudflare 验证组件加载...');
+        console.log('等待弹窗和广告加载...');
         await page.waitForTimeout(10000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare 验证...');
-        const captchaSelector = '.cf-turnstile, [class*="cf-turnstile"], #cf-turnstile, [id*="cf-"]';
-        const captchaElement = await page.$(captchaSelector);
+        console.log('第三步：核心突破——定位并点击弹窗内的广告以激活链接...');
         
-        if (captchaElement) {
-            console.log('🎯 成功在 DOM 树中捕捉到原生的 Turnstile 验证组件。');
-            const box = await captchaElement.boundingBox();
-            if (box) {
-                const targetX = box.x + 35; 
-                const targetY = box.y + (box.height / 2);
-                
-                await page.mouse.move(targetX, targetY, { steps: 12 });
-                await page.waitForTimeout(200);
-                await page.mouse.click(targetX, targetY, { delay: 150 });
-                console.log('👉 已成功点击验证码复选框，等待 6 秒让绿勾生成...');
-                await page.waitForTimeout(6000);
+        // 匹配各种可能包裹广告的常见选择器
+        const adSelectors = [
+            '.modal-body iframe', 
+            '.modal-body ins', 
+            '.modal-dialog iframe',
+            'iframe[src*="googleads"]',
+            'iframe[title*="Advertisement"]',
+            '.modal-body a[href*="http"]'
+        ];
+        
+        let adElement = null;
+        for (const selector of adSelectors) {
+            adElement = await page.$(selector);
+            if (adElement && await adElement.isVisible()) {
+                console.log(`🎯 成功锁定广告元素选择器: ${selector}`);
+                break;
             }
         }
 
+        if (adElement) {
+            const box = await adElement.boundingBox();
+            if (box) {
+                console.log(`计算广告位置: [X:${box.x + box.width/2}, Y:${box.y + box.height/2}]，准备模拟点击...`);
+                
+                // 监听可能因为点广告弹出来的新页面，防止它卡住
+                const pagePromise = context.waitForEvent('page', { timeout: 5000 }).catch(() => null);
+                
+                // 点击广告正中心
+                await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 10 });
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                console.log('👉 广告已点击！');
+                
+                // 如果弹出了新标签页，悄悄把它关掉，回到主界面
+                const newPage = await pagePromise;
+                if (newPage) {
+                    console.log('检测到广告弹窗页面，正在自动将其关闭以维持主流程...');
+                    await newPage.close().catch(() => null);
+                }
+            }
+        } else {
+            console.log('⚠️ 未检测到明显的广告容器，启动降维打击：直接点击弹窗正中央偏上区域！');
+            // 弹窗正中心偏上往往是放广告或者横幅的地方
+            await page.mouse.click(683, 300, { delay: 100 });
+        }
+
+        console.log('等待 15 秒让网页感知到广告被点击，并等待后端刷新数据...');
+        await page.waitForTimeout(15000);
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
-        // 【关键修复】人机验证变绿后，点击弹窗里的最终提交/续期按钮
-        console.log('第四步：寻找并点击弹窗提交按钮...');
-        // 尝试匹配常见的提交按钮文本，如 "Renew", "Submit", "Confirm", "OK" 或者带有 btn-primary 属性的按钮
+        // 第四步：检查是否有衍生出现的提交按钮
+        console.log('第四步：检查是否需要点击确认续期...');
         let submitBtn = page.locator('.modal-dialog button:has-text("Renew"), .modal-dialog button:has-text("Submit"), .modal-dialog button:has-text("OK")').first();
-        
         if (await submitBtn.count() === 0) {
-            // 如果找不到特定文本，就找模态框里的主按钮
             submitBtn = page.locator('.modal-dialog .btn-primary, .modal-footer .btn').first();
         }
 
         if (await submitBtn.count() > 0 && await submitBtn.isVisible()) {
-            console.log('🚀 检测到确认提交按钮，正在点击以完成续期...');
+            console.log('🚀 发现确认提交按钮，执行最终确认...');
             await submitBtn.click();
-            // 给后端入库留出 10 秒刷新时间
             await page.waitForTimeout(10000);
-        } else {
-            console.log('ℹ️ 未发现额外的提交按钮，可能绿勾后会自动提交，多等待 5 秒...');
-            await page.waitForTimeout(5000);
         }
 
         await page.screenshot({ path: '4_final_result.png' });
