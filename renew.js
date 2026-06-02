@@ -93,7 +93,6 @@ function startXrayProxy(vlessLink) {
     }
 
     const browser = await chromium.launch(launchOptions);
-    // 采用更高契合度的真实环境参数，隐藏无头浏览器特征
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
         viewport: { width: 1366, height: 768 },
@@ -107,30 +106,41 @@ function startXrayProxy(vlessLink) {
         console.log('第一步：正在打开目标网页...');
         await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
         
-        // 抓取最原始的倒计时时间
-        const initialTime = await page.locator('.text-cyan-400').first().innerText().catch(() => '未知');
+        // 稍微等待确保数字完全显示
+        await page.waitForTimeout(3000);
+        // 通过寻找包含文本的元素来确保准确定位
+        const initialTime = await page.locator('text=SERVER TIME REMAINING').locator('xpath=../div').first().innerText().catch(() => '未知');
         console.log(`网页初始剩余时间: ${initialTime}`);
         await page.screenshot({ path: '1_initial_status.png' });
 
         console.log('第二步：点击 + ADD 90 MIN 按钮...');
-        const addBtn = page.locator('button:has-text("ADD 90 MIN"), [class*="add"] :text("ADD 90 MIN"), text="+ ADD 90 MIN"').first();
+        
+        // 分级、安全的独立定位器策略：先尝试最直接的文本点击
+        let addBtn = page.locator('text="+ ADD 90 MIN"').first();
+        if (await addBtn.count() === 0) {
+            // 如果不可行，寻找普通的包含该文本的按钮
+            addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
+        }
+        
         await addBtn.click();
+        console.log('已成功触发点击动作。');
         
         await page.waitForTimeout(6000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
         console.log('第三步：处理 Cloudflare 验证打勾...');
-        // 延长寻找 cf iframe 的超时时间
         await page.waitForSelector('iframe[src*="cloudflare"]', { timeout: 15000 }).catch(() => null);
         
-        // 遍历寻找包含 challenge 的那个特定的内部 iframe
         const allFrames = page.frames();
         const cfFrame = allFrames.find(f => f.url().includes('cloudflare') && f.url().includes('turnstile')) || allFrames.find(f => f.url().includes('challenges'));
         
         if (cfFrame) {
             console.log('成功捕获到 Cloudflare 校验帧，开始探测点击热区...');
-            // 兼容多语种的复合选择器
-            const checkbox = cfFrame.locator('#challenge-stage, input[type="checkbox"], #content').first();
+            // 分立合法选择器，避免合并使用特殊 token
+            let checkbox = cfFrame.locator('#challenge-stage').first();
+            if (await checkbox.count() === 0) {
+                checkbox = cfFrame.locator('input[type="checkbox"]').first();
+            }
             
             if (await checkbox.count() > 0) {
                 console.log('锁定验证方框，执行真人跨域点击模拟...');
@@ -147,8 +157,7 @@ function startXrayProxy(vlessLink) {
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
         console.log('第四步：检查续期后的时间状态...');
-        // 使用精确类名抓取高亮倒计时文本
-        const endTime = await page.locator('.text-cyan-400').first().innerText().catch(() => '获取失败');
+        const endTime = await page.locator('text=SERVER TIME REMAINING').locator('xpath=../div').first().innerText().catch(() => '获取失败');
         console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
 
     } catch (error) {
