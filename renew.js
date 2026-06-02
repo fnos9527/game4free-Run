@@ -8,12 +8,11 @@ function startXrayProxy(vlessLink) {
         console.log('⚠️ 未检测到 MY_VLESS_PROXY 变量，将不使用代理运行。');
         return false;
     }
-
     console.log('正在下载 Xray-core...');
     try {
-        execSync('curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip', { stdio: 'inherit' });
-        execSync('unzip -o xray.zip xray', { stdio: 'inherit' });
-        execSync('chmod +x xray', { stdio: 'inherit' });
+        execSync('curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip', { stdio: 'ignore' });
+        execSync('unzip -o xray.zip xray', { stdio: 'ignore' });
+        execSync('chmod +x xray', { stdio: 'ignore' });
     } catch (err) {
         console.error('❌ 下载或解压 Xray 失败:', err.message);
         return false;
@@ -50,7 +49,6 @@ function startXrayProxy(vlessLink) {
                 }
             }]
         };
-
         fs.writeFileSync('config.json', JSON.stringify(config, null, 2));
     } catch (err) {
         console.error('❌ 换算配置失败:', err.message);
@@ -64,12 +62,24 @@ function startXrayProxy(vlessLink) {
     execSync('sleep 3');
     console.log('验证代理是否成功畅通...');
     try {
-        execSync('curl --socks5-hostname 127.0.0.1:10808 -m 5 https://www.cloudflare.com/cdn-cgi/trace', { stdio: 'inherit' });
+        execSync('curl --socks5-hostname 127.0.0.1:10808 -m 5 https://www.cloudflare.com/cdn-cgi/trace', { stdio: 'ignore' });
         console.log('✅ Xray 代理通道建立成功！');
         return true;
     } catch (e) {
         console.log('⚠️ 代理联通测试失败，尝试继续运作。');
         return true; 
+    }
+}
+
+// 在全局页面提取类似 05:23:12 的时间字符串
+async function extractServerTime(page) {
+    try {
+        const pageText = await page.innerText('body');
+        // 用正则匹配时分秒格式 xx:xx:xx
+        const match = pageText.match(/\d{2}:\d{2}:\d{2}/);
+        return match ? match[0] : '无法提取具体数字';
+    } catch (e) {
+        return '获取失败';
     }
 }
 
@@ -83,7 +93,8 @@ function startXrayProxy(vlessLink) {
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
             '--blink-settings=imagesEnabled=true',
-            '--disable-infobars'
+            // 极限抹除自动化痕迹
+            '--disable-blink-features=AutomationControlled'
         ]
     };
 
@@ -99,6 +110,11 @@ function startXrayProxy(vlessLink) {
         locale: 'en-US',
         timezoneId: 'Europe/Amsterdam'
     });
+
+    // 终极绝招：抹除 window.navigator.webdriver 特征，不让 CF 发现这是无头自动化浏览器
+    await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
     
     const page = await context.newPage();
 
@@ -106,58 +122,47 @@ function startXrayProxy(vlessLink) {
         console.log('第一步：正在打开目标网页...');
         await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
         
-        // 稍微等待确保数字完全显示
-        await page.waitForTimeout(3000);
-        // 通过寻找包含文本的元素来确保准确定位
-        const initialTime = await page.locator('text=SERVER TIME REMAINING').locator('xpath=../div').first().innerText().catch(() => '未知');
-        console.log(`网页初始剩余时间: ${initialTime}`);
+        await page.waitForTimeout(4000);
+        const initialTime = await extractServerTime(page);
+        console.log(`⏱️ 网页初始剩余时间: ${initialTime}`);
         await page.screenshot({ path: '1_initial_status.png' });
 
         console.log('第二步：点击 + ADD 90 MIN 按钮...');
-        
-        // 分级、安全的独立定位器策略：先尝试最直接的文本点击
         let addBtn = page.locator('text="+ ADD 90 MIN"').first();
         if (await addBtn.count() === 0) {
-            // 如果不可行，寻找普通的包含该文本的按钮
             addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
-        
         await addBtn.click();
         console.log('已成功触发点击动作。');
         
         await page.waitForTimeout(6000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare 验证打勾...');
-        await page.waitForSelector('iframe[src*="cloudflare"]', { timeout: 15000 }).catch(() => null);
+        console.log('第三步：处理 Cloudflare 验证...');
+        // 寻找任何包含 cloudflare 的 iframe
+        const cfIframeSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"]';
+        await page.waitForSelector(cfIframeSelector, { timeout: 10000 }).catch(() => null);
         
-        const allFrames = page.frames();
-        const cfFrame = allFrames.find(f => f.url().includes('cloudflare') && f.url().includes('turnstile')) || allFrames.find(f => f.url().includes('challenges'));
-        
-        if (cfFrame) {
-            console.log('成功捕获到 Cloudflare 校验帧，开始探测点击热区...');
-            // 分立合法选择器，避免合并使用特殊 token
-            let checkbox = cfFrame.locator('#challenge-stage').first();
-            if (await checkbox.count() === 0) {
-                checkbox = cfFrame.locator('input[type="checkbox"]').first();
-            }
-            
-            if (await checkbox.count() > 0) {
-                console.log('锁定验证方框，执行真人跨域点击模拟...');
-                await checkbox.click({ force: true, delay: 150 });
-                console.log('指令已发送，保持等待 10 秒等待验证闭环...');
-                await page.waitForTimeout(10000);
-            } else {
-                console.log('未能提取到有效的 checkbox 点击点。');
+        const cfElement = await page.$(cfIframeSelector);
+        if (cfElement) {
+            console.log('成功捕获到 Cloudflare 容器，执行强行点击突破...');
+            // 获取整个容器的范围，并在其中央点击，逼迫没有显式复选框的强交互进行自我核验
+            const box = await cfElement.boundingBox();
+            if (box) {
+                // 在 iframe 的正中心偏左一点的位置模拟人工单点
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 100 });
+                console.log('已对验证容器中心实施模拟点击，等待 12 秒核验期...');
+                await page.waitForTimeout(12000);
             }
         } else {
-            console.log('未检测到验证框架，可能已被代理 IP 直接放行。');
+            console.log('未检测到验证框架，可能已被安全放行。');
         }
 
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
         console.log('第四步：检查续期后的时间状态...');
-        const endTime = await page.locator('text=SERVER TIME REMAINING').locator('xpath=../div').first().innerText().catch(() => '获取失败');
+        await page.waitForTimeout(2000);
+        const endTime = await extractServerTime(page);
         console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
 
     } catch (error) {
