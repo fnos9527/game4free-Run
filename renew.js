@@ -86,9 +86,8 @@ async function extractServerTime(page) {
     const vlessLink = process.env.MY_VLESS_PROXY;
     const isProxyActive = startXrayProxy(vlessLink);
 
-    // 【重要升级】改用 headless: false 配合 GitHub Actions 的 xvfb 环境，伪装成纯真人有头浏览器
     const launchOptions = {
-        headless: false,
+        headless: false, // 配合 xvfb 运行真实浏览器
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
@@ -103,15 +102,12 @@ async function extractServerTime(page) {
     }
 
     const browser = await chromium.launch(launchOptions);
-    
-    // 【重要升级】不再硬编码注入假 UA，让 Playwright 自适应生成绝对合规的底层环境
     const context = await browser.newContext({
         viewport: { width: 1366, height: 768 },
         locale: 'en-US',
         timezoneId: 'Europe/Amsterdam'
     });
 
-    // 完美抹除自动化标记
     await context.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         window.chrome = { runtime: {} };
@@ -133,46 +129,55 @@ async function extractServerTime(page) {
         if (await addBtn.count() === 0) {
             addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
+        
+        // 抓取按钮坐标，为鼠标滑动轨迹做准备
+        const btnBounds = await addBtn.boundingBox();
         await addBtn.click();
         console.log('已成功触发点击动作。');
         
-        console.log('等待弹窗和 Cloudflare 验证组件加载中...');
-        await page.waitForTimeout(10000); // 稍微延长等待，确保网络加载
+        console.log('等待弹窗和 Cloudflare 验证组件加载（增加到12秒缓冲）...');
+        await page.waitForTimeout(12000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare 验证...');
+        console.log('第三步：处理 Cloudflare 验证（坐标盲点对抗模式）...');
         
         const cfSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"], iframe[title*="Cloudflare"]';
-        await page.waitForSelector(cfSelector, { timeout: 15000 }).catch(() => null);
-        
         const cfElement = await page.$(cfSelector);
+        
         if (cfElement) {
-            console.log('已精确定位到 Cloudflare 验证框架。');
-            
-            // 深入内部寻找勾选框
-            const cfFrame = page.frames().find(f => f.url().includes('cloudflare') || f.url().includes('challenge'));
-            if (cfFrame) {
-                const innerBox = cfFrame.locator('#challenge-stage, input[type="checkbox"], .content, #content').first();
-                if (await innerBox.count() > 0) {
-                    console.log('正在执行内部特定节点穿透点击...');
-                    await innerBox.click({ force: true, timeout: 5000 }).catch(() => null);
-                }
-            }
-            
-            // 宏观中心点单点
+            console.log('成功检测到验证组件 DOM，尝试精确制导点击...');
             const box = await cfElement.boundingBox();
             if (box) {
-                console.log('正在执行容器宏观中心点模拟点击...');
-                await page.mouse.click(box.x + box.width / 2.3, box.y + box.height / 2, { delay: 120 });
+                // 模拟真人平滑移动鼠标到复选框区
+                await page.mouse.move(box.x + box.width / 4, box.y + box.height / 2, { steps: 10 });
+                await page.mouse.click(box.x + box.width / 4, box.y + box.height / 2, { delay: 150 });
+            }
+        } else {
+            console.log('⚠️ 未在 DOM 树中捕捉到标准 iframe，启动坐标盲补轰炸模式...');
+            // 根据 1366x768 屏幕下 Bootstrap 居中弹窗的视觉常理：
+            // 弹窗中心通常在 x: 683, y: 384 附近，转圈加载的位置大约在 x: 520~560, y: 320~380 之间
+            // 模拟鼠标滑行过去
+            if (btnBounds) {
+                await page.mouse.move(btnBounds.x, btnBounds.y);
             }
             
-            console.log('点击指令已发送，保持挂起状态 15 秒（等待 Cloudflare 响应完成）...');
-            await page.waitForTimeout(15000);
+            // 尝试在可能渲染验证码复选框的几个中心点区域连续盲点
+            const targets = [
+                {x: 550, y: 345},
+                {x: 535, y: 345},
+                {x: 565, y: 345}
+            ];
             
-        } else {
-            console.log('⚠️ 依然未能捕获到验证码 iframe。');
+            for (const target of targets) {
+                console.log(`模拟真人轨迹划向绝对坐标 [X:${target.x}, Y:${target.y}] 并触发点击...`);
+                await page.mouse.move(target.x, target.y, { steps: 8 });
+                await page.waitForTimeout(200);
+                await page.mouse.click(target.x, target.y, { delay: 100 });
+            }
         }
 
+        console.log('点击指令完全送达，挂起 15 秒等待后端时间入库...');
+        await page.waitForTimeout(15000);
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
         console.log('第四步：检查续期后的时间状态...');
