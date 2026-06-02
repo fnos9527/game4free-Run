@@ -27,7 +27,6 @@ jobs:
         chmod +x xray
         
         echo "正在启动 Xray 代理服务..."
-        # 后台运行 xray，并将日志输出到 xray.log
         ./xray -c config.json > xray.log 2>&1 &
         
         echo "原地等待 3 秒等待代理建立连接..."
@@ -38,15 +37,14 @@ jobs:
 
     - name: 安装项目依赖 (Axios & Playwright)
       run: |
+        # 强制清空一下可能残留的缓存，重新干净地安装
         npm install axios playwright
-        # 安装 Playwright 运行所需的系统浏览器核心
-        npx playwright install chromium
+        # 用刚刚安装好的局部 npx 路径去装 chromium
+        ./node_modules/.bin/playwright install chromium
 
     - name: 运行续期脚本 (通过虚拟桌面环境)
       env:
-        # 从 GitHub Secrets 中读取你的安全 Cookie 凭证
         MY_WEBSITE_COOKIE: ${{ secrets.MY_WEBSITE_COOKIE }}
-        # 让全系统（包括 Playwright）的网络请求强制走本地的 Xray 代理
         HTTP_PROXY: "socks5://127.0.0.1:10808"
         HTTPS_PROXY: "socks5://127.0.0.1:10808"
       run: |
