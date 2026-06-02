@@ -1,0 +1,42 @@
+name: Minecraft Server Auto Renew
+
+on:
+  workflow_dispatch: # 支持手动触发
+  repository_dispatch: # 支持外部 API 触发 (用于 cron-job.org)
+    types: [renew_trigger]
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+
+    - name: 设置 Node.js 环境
+      uses: actions/setup-node@v4
+      with:
+        node-node-version: '20'
+
+    - name: 安装依赖
+      run: |
+        npm init -y
+        npm install playwright
+
+    - name: 安装 Playwright 浏览器内核
+      run: npx playwright install chromium --with-deps
+
+    - name: 执行续期脚本
+      env:
+        # 如果后续接入了验证码平台，可以在仓库的 Settings -> Secrets -> Actions 中配置
+        CAPTCHA_API_KEY: ${{ secrets.CAPTCHA_API_KEY }} 
+      run: node renew.js
+
+    - name: 上传运行截图 (用于排查人机验证是否通过)
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: execution-screenshots
+        path: |
+          *.png
+        retention-days: 3
