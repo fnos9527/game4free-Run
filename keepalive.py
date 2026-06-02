@@ -9,26 +9,23 @@ SOCKS5 = "socks5://127.0.0.1:10808"
 
 
 def find_chrome() -> str:
-    """找 Chrome/Chromium 可执行文件路径"""
     candidates = [
         os.environ.get("CHROME_BIN", ""),
         "/usr/bin/google-chrome",
         "/usr/bin/google-chrome-stable",
         "/usr/bin/chromium-browser",
         "/usr/bin/chromium",
-        "/snap/bin/chromium",
     ]
     for p in candidates:
         if p and os.path.isfile(p):
             print(f"  找到浏览器: {p}")
             return p
-    # fallback: shutil.which
     for name in ("google-chrome", "google-chrome-stable", "chromium-browser", "chromium"):
         p = shutil.which(name)
         if p:
             print(f"  找到浏览器(which): {p}")
             return p
-    raise FileNotFoundError("找不到 Chrome/Chromium，请确认已安装")
+    raise FileNotFoundError("找不到 Chrome/Chromium")
 
 
 def parse_seconds(t: str) -> int:
@@ -76,11 +73,25 @@ async def main():
         ],
     )
 
+    page = None
     try:
         print(f"\n📂  打开 {TARGET} ...")
         page = await browser.get(TARGET)
-        await asyncio.sleep(5)
+
+        # 等页面完全加载
+        await asyncio.sleep(6)
         await page.save_screenshot("01_opened.png")
+
+        # 打印页面所有按钮文字，方便调试
+        btns = await page.evaluate("""
+        (() => {
+            return [...document.querySelectorAll('button,a,[role=button]')]
+                .map(e => e.innerText.trim())
+                .filter(t => t.length > 0)
+                .slice(0, 20);
+        })()
+        """)
+        print(f"  页面按钮列表: {btns}")
 
         time_before = await get_timer(page)
         print(f"⏱️   点击前时间: {time_before}")
@@ -89,19 +100,29 @@ async def main():
         print("\n🖱️   点击 +ADD 90 MIN ...")
         clicked = await page.evaluate("""
         (() => {
-            const el = [...document.querySelectorAll('button,a,[role=button]')]
-                .find(e => (e.innerText || '').includes('ADD 90 MIN'));
-            if (el) { el.click(); return true; }
-            return false;
+            // 忽略大小写、空白，宽泛匹配
+            const el = [...document.querySelectorAll('button,a,[role=button],div')]
+                .find(e => {
+                    const t = (e.innerText || '').replace(/\s+/g, ' ').toUpperCase();
+                    return t.includes('ADD 90') || t.includes('ADD90');
+                });
+            if (el) {
+                console.log('找到按钮:', el.innerText);
+                el.click();
+                return el.innerText.trim();
+            }
+            return null;
         })()
         """)
 
         if not clicked:
-            print("  ❌ 未找到按钮")
+            print("  ❌ 未找到按钮，打印页面文字调试...")
+            body = await page.evaluate("document.body.innerText")
+            print("  页面文字（前500字）:", body[:500] if body else "(空)")
             await page.save_screenshot("error_no_btn.png")
             return
 
-        print("  ✅ 已点击")
+        print(f"  ✅ 已点击: [{clicked}]")
         await asyncio.sleep(3)
         await page.save_screenshot("02_after_click.png")
 
@@ -151,7 +172,11 @@ async def main():
         print("=" * 55)
 
     finally:
-        await browser.stop()
+        # nodriver 的 stop 不是协程，直接调用
+        try:
+            browser.stop()
+        except Exception:
+            pass
         print("✅  完成")
 
 
