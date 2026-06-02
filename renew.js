@@ -115,78 +115,45 @@ async function extractServerTime(page) {
             addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
         await addBtn.click();
+        console.log('已成功触发点击弹窗。');
         
-        console.log('等待弹窗和广告加载...');
-        await page.waitForTimeout(10000); 
+        // 【战略调整】不急着点操作，先挂起 20 秒，把弹窗底部的 15秒 强制倒计时给硬生生熬完！
+        console.log('⏳ 监测到页面存在隐藏倒计时，正在原地挂起等待 20 秒让激活按钮生成...');
+        await page.waitForTimeout(20000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：核心突破——定位并点击弹窗内的广告以激活链接...');
+        console.log('第三步：寻找倒计时结束后浮现的真实续期提交按钮...');
         
-        // 匹配各种可能包裹广告的常见选择器
-        const adSelectors = [
-            '.modal-body iframe', 
-            '.modal-body ins', 
-            '.modal-dialog iframe',
-            'iframe[src*="googleads"]',
-            'iframe[title*="Advertisement"]',
-            '.modal-body a[href*="http"]'
-        ];
+        // 扫射弹窗内所有可能变成了可点击状态的按钮 (包含 Renew, Submit, OK, Add, Click, 或者带主要颜色类的样式)
+        let submitBtn = page.locator('.modal-dialog button:has-text("Renew"), .modal-dialog button:has-text("Submit"), .modal-dialog button:has-text("OK"), .modal-dialog button:has-text("Add")').first();
         
-        let adElement = null;
-        for (const selector of adSelectors) {
-            adElement = await page.$(selector);
-            if (adElement && await adElement.isVisible()) {
-                console.log(`🎯 成功锁定广告元素选择器: ${selector}`);
-                break;
-            }
-        }
-
-        if (adElement) {
-            const box = await adElement.boundingBox();
-            if (box) {
-                console.log(`计算广告位置: [X:${box.x + box.width/2}, Y:${box.y + box.height/2}]，准备模拟点击...`);
-                
-                // 监听可能因为点广告弹出来的新页面，防止它卡住
-                const pagePromise = context.waitForEvent('page', { timeout: 5000 }).catch(() => null);
-                
-                // 点击广告正中心
-                await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 10 });
-                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                console.log('👉 广告已点击！');
-                
-                // 如果弹出了新标签页，悄悄把它关掉，回到主界面
-                const newPage = await pagePromise;
-                if (newPage) {
-                    console.log('检测到广告弹窗页面，正在自动将其关闭以维持主流程...');
-                    await newPage.close().catch(() => null);
-                }
-            }
-        } else {
-            console.log('⚠️ 未检测到明显的广告容器，启动降维打击：直接点击弹窗正中央偏上区域！');
-            // 弹窗正中心偏上往往是放广告或者横幅的地方
-            await page.mouse.click(683, 300, { delay: 100 });
-        }
-
-        console.log('等待 15 秒让网页感知到广告被点击，并等待后端刷新数据...');
-        await page.waitForTimeout(15000);
-        await page.screenshot({ path: '3_after_captcha_attempt.png' });
-
-        // 第四步：检查是否有衍生出现的提交按钮
-        console.log('第四步：检查是否需要点击确认续期...');
-        let submitBtn = page.locator('.modal-dialog button:has-text("Renew"), .modal-dialog button:has-text("Submit"), .modal-dialog button:has-text("OK")').first();
-        if (await submitBtn.count() === 0) {
-            submitBtn = page.locator('.modal-dialog .btn-primary, .modal-footer .btn').first();
+        if (await submitBtn.count() === 0 || !(await submitBtn.isVisible())) {
+            // 后备：抓取模态框里所有高亮的 btn 类按钮
+            submitBtn = page.locator('.modal-dialog .btn-success, .modal-dialog .btn-primary, .modal-footer button').first();
         }
 
         if (await submitBtn.count() > 0 && await submitBtn.isVisible()) {
-            console.log('🚀 发现确认提交按钮，执行最终确认...');
-            await submitBtn.click();
+            console.log('🚀 成功捕获到可用的提交按钮！正在模拟真人轨迹并执行最终确认点击...');
+            const sBox = await submitBtn.boundingBox();
+            if (sBox) {
+                await page.mouse.move(sBox.x + sBox.width / 2, sBox.y + sBox.height / 2, { steps: 10 });
+                await page.mouse.click(sBox.x + sBox.width / 2, sBox.y + sBox.height / 2);
+            } else {
+                await submitBtn.click({ force: true });
+            }
+            console.log('点击完成，等待 10 秒供后端时间刷新数据...');
+            await page.waitForTimeout(10000);
+        } else {
+            console.log('⚠️ 倒计时走完后依然没找到按钮，尝试做最后一次弹窗下半区域的盲点尝试...');
+            // 绝大多数弹窗按钮都在下半部分正中央，我们点一下试试
+            await page.mouse.click(683, 420, { delay: 100 });
             await page.waitForTimeout(10000);
         }
 
+        await page.screenshot({ path: '3_after_captcha_attempt.png' });
         await page.screenshot({ path: '4_final_result.png' });
 
-        console.log('第五步：检查续期后的时间状态...');
+        console.log('第四步：检查续期后的时间状态...');
         const endTime = await extractServerTime(page);
         console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
 
