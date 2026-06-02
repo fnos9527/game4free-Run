@@ -56,7 +56,7 @@ function startXrayProxy(vlessLink) {
     }
 
     console.log('在后台启动 Xray 服务...');
-    const xrayProcess = exec('././xray -config config.json > xray.log 2>&1');
+    const xrayProcess = exec('./xray -config config.json > xray.log 2>&1');
     xrayProcess.unref();
 
     execSync('sleep 3');
@@ -86,8 +86,9 @@ async function extractServerTime(page) {
     const vlessLink = process.env.MY_VLESS_PROXY;
     const isProxyActive = startXrayProxy(vlessLink);
 
+    // 【重要升级】改用 headless: false 配合 GitHub Actions 的 xvfb 环境，伪装成纯真人有头浏览器
     const launchOptions = {
-        headless: true,
+        headless: false,
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
@@ -102,15 +103,18 @@ async function extractServerTime(page) {
     }
 
     const browser = await chromium.launch(launchOptions);
+    
+    // 【重要升级】不再硬编码注入假 UA，让 Playwright 自适应生成绝对合规的底层环境
     const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
         viewport: { width: 1366, height: 768 },
         locale: 'en-US',
         timezoneId: 'Europe/Amsterdam'
     });
 
+    // 完美抹除自动化标记
     await context.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        window.chrome = { runtime: {} };
     });
     
     const page = await context.newPage();
@@ -132,55 +136,46 @@ async function extractServerTime(page) {
         await addBtn.click();
         console.log('已成功触发点击动作。');
         
-        // 【关键升级】给弹窗动画留出充足的加载与显现时间
         console.log('等待弹窗和 Cloudflare 验证组件加载中...');
-        await page.waitForTimeout(8000); 
+        await page.waitForTimeout(10000); // 稍微延长等待，确保网络加载
         await page.screenshot({ path: '2_after_click_popup.png' });
 
         console.log('第三步：处理 Cloudflare 验证...');
         
-        // 覆盖主流的 Cloudflare iframe 选择标记
         const cfSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"], iframe[title*="Cloudflare"]';
-        
-        // 强制确保元素被渲染出来
         await page.waitForSelector(cfSelector, { timeout: 15000 }).catch(() => null);
         
         const cfElement = await page.$(cfSelector);
         if (cfElement) {
             console.log('已精确定位到 Cloudflare 验证框架。');
             
-            // 策略 A：直接定位 iframe 内部的复选框区域点击
+            // 深入内部寻找勾选框
             const cfFrame = page.frames().find(f => f.url().includes('cloudflare') || f.url().includes('challenge'));
-            let clickedInside = false;
-            
             if (cfFrame) {
-                const innerBox = cfFrame.locator('#challenge-stage, input[type="checkbox"], #rc-anchor-container, .content').first();
+                const innerBox = cfFrame.locator('#challenge-stage, input[type="checkbox"], .content, #content').first();
                 if (await innerBox.count() > 0) {
                     console.log('正在执行内部特定节点穿透点击...');
                     await innerBox.click({ force: true, timeout: 5000 }).catch(() => null);
-                    clickedInside = true;
                 }
             }
             
-            // 策略 B：如果内部节点没点到，对整个容器进行正中心宏观点击（双保险）
+            // 宏观中心点单点
             const box = await cfElement.boundingBox();
             if (box) {
                 console.log('正在执行容器宏观中心点模拟点击...');
-                // 往中心偏左移动一点，完美命中勾选框中心
                 await page.mouse.click(box.x + box.width / 2.3, box.y + box.height / 2, { delay: 120 });
             }
             
-            console.log('点击指令完全送达，保持挂起状态 15 秒（等待 Cloudflare 响应完成）...');
+            console.log('点击指令已发送，保持挂起状态 15 秒（等待 Cloudflare 响应完成）...');
             await page.waitForTimeout(15000);
             
         } else {
-            console.log('⚠️ 依然未能捕获到验证码 iframe，请确认弹窗中是否展示了验证框。');
+            console.log('⚠️ 依然未能捕获到验证码 iframe。');
         }
 
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
         console.log('第四步：检查续期后的时间状态...');
-        // 再次等待2秒，确保网页上的数据刷新完毕
         await page.waitForTimeout(2000);
         const endTime = await extractServerTime(page);
         console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
