@@ -2,9 +2,9 @@ name: Server Auto Renew
 
 on:
   schedule:
-    # 每 1 个小时自动跑一次（因为每次加 90 分钟）
+    # 每 1 小时自动运行一次（每次成功续期 90 分钟）
     - cron: '0 */1 * * *'
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch: # 支持手动点击运行
 
 jobs:
   renew:
@@ -15,15 +15,45 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Setup Node.js
-      uses: actions/actions-setup-node@v4
+      uses: actions/setup-node@v4
       with:
         node-version: '18'
 
-    - name: Install dependencies
-      run: npm install axios
+    - name: 下载并配置 Xray 代理
+      run: |
+        echo "正在下载 Xray-core..."
+        curl -L -H "User-Agent: Mozilla/5.0" -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+        unzip -q xray.zip
+        chmod +x xray
+        
+        echo "正在启动 Xray 代理服务..."
+        # 后台运行 xray，并将日志输出到 xray.log
+        ./xray -c config.json > xray.log 2>&1 &
+        
+        echo "原地等待 3 秒等待代理建立连接..."
+        sleep 3
+        
+        echo "检查 Xray 是否成功启动："
+        ps aux | grep xray
 
-    - name: Run Renew Script
+    - name: 安装项目依赖 (Axios & Playwright)
+      run: |
+        npm install axios playwright
+        # 安装 Playwright 运行所需的系统浏览器核心
+        npx playwright install chromium
+
+    - name: 运行续期脚本 (通过虚拟桌面环境)
       env:
-        # 把 Cookie 存在安全变量里，以后过期了只需要在 GitHub 网页上改，不用改代码
+        # 从 GitHub Secrets 中读取你的安全 Cookie 凭证
         MY_WEBSITE_COOKIE: ${{ secrets.MY_WEBSITE_COOKIE }}
-      run: node renew.js
+        # 让全系统（包括 Playwright）的网络请求强制走本地的 Xray 代理
+        HTTP_PROXY: "socks5://127.0.0.1:10808"
+        HTTPS_PROXY: "socks5://127.0.0.1:10808"
+      run: |
+        xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24" node renew.js
+
+    - name: 打印 Xray 运行日志 (可选-用于排查代理问题)
+      if: always()
+      run: |
+        echo "=== Xray 运行日志片段 ==="
+        tail -n 20 xray.log || true
