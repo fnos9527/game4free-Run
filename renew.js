@@ -25,19 +25,12 @@ function startXrayProxy(vlessLink) {
 
         const config = {
             inbounds: [{
-                port: 10808,
-                listen: "127.0.0.1",
-                protocol: "socks",
-                settings: { auth: "noauth", udp: true }
+                port: 10808, listen: "127.0.0.1", protocol: "socks", settings: { auth: "noauth", udp: true }
             }],
             outbounds: [{
                 protocol: "vless",
                 settings: {
-                    vnext: [{
-                        address: host,
-                        port: parseInt(port || "443"),
-                        users: [{ id: uuid, encryption: "none" }]
-                    }]
+                    vnext: [{ address: host, port: parseInt(port || "443"), users: [{ id: uuid, encryption: "none" }] }]
                 },
                 streamSettings: {
                     network: params.get("type") || "tcp",
@@ -100,6 +93,22 @@ async function extractServerTime(page) {
     
     const page = await context.newPage();
 
+    // 🌟 【黑科技核心】建立全网流量拦截监听器，抓取核心 API 接口
+    const interceptedRequests = [];
+    page.on('request', request => {
+        const url = request.url();
+        // 过滤掉广告、无用静态资源，专门拦截发给自身域名的关键 API 或后台请求
+        if (url.includes('g4f.gg') && (url.includes('renew') || url.includes('add') || url.includes('update') || request.method() === 'POST')) {
+            console.log(`📡 抓包捕获到关键后端请求 [${request.method()}]: ${url}`);
+            interceptedRequests.push({
+                url: url,
+                method: request.method(),
+                headers: request.headers(),
+                postData: request.postData()
+            });
+        }
+    });
+
     try {
         console.log('第一步：正在打开目标网页...');
         await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
@@ -109,87 +118,59 @@ async function extractServerTime(page) {
         console.log(`⏱️ 网页初始剩余时间: ${initialTime}`);
         await page.screenshot({ path: '1_initial_status.png' });
 
-        console.log('第二步：点击 + ADD 90 MIN 按钮...');
+        console.log('第二步：点击 + ADD 90 MIN 按钮并激活抓包...');
         let addBtn = page.locator('text="+ ADD 90 MIN"').first();
         if (await addBtn.count() === 0) {
             addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
         await addBtn.click();
-        console.log('已成功触发点击弹窗。');
-        await page.waitForTimeout(5000); 
-
-        console.log('第三步：解密与绕过限制——启动 JavaScript 逆向强制注入流程...');
-
-        // 直接注入 JS，把页面里所有可能隐藏的表单、带有 submit 或 btn-primary 的隐藏函数全部强行激活
-        await page.evaluate(() => {
-            console.log("正在尝试前端逻辑硬突防...");
-            
-            // 1. 尝试直接触发表单提交
-            const forms = document.querySelectorAll('form');
-            forms.forEach(form => {
-                if (form.action && form.action.includes('renew') || form.innerHTML.includes('90')) {
-                    form.submit();
-                }
-            });
-
-            // 2. 移除所有阻碍点击的禁用状态 (disabled/hidden)
-            const allButtons = document.querySelectorAll('.modal-dialog button, .modal-dialog a, .modal-footer button');
-            allButtons.forEach(btn => {
-                btn.removeAttribute('disabled');
-                btn.classList.remove('disabled');
-                btn.style.display = 'block';
-                btn.style.visibility = 'visible';
-                // 强制改写倒计时文字，让它以为倒计时已经结束
-                if(btn.innerText.includes('wait') || btn.innerText.includes('ready')) {
-                    btn.innerText = 'Renew Now';
-                }
-            });
-
-            // 3. 寻找潜在的 Cloudflare Turnstile 成功回调函数并原地执行
-            // 很多网站在 Turnstile 成功后会给 window 挂载一个全局回调函数
-            for (let key in window) {
-                if (key.toLowerCase().includes('captcha') || key.toLowerCase().includes('turnstile') || key.toLowerCase().includes('callback')) {
-                    if (typeof window[key] === 'function') {
-                        try { window[key]("mocked_token_success"); } catch(e){}
-                    }
-                }
-            }
-        });
-
-        console.log('已执行前端代码重写。正在对解除封印后的按钮进行地毯式点击...');
+        
+        // 给它 10 秒时间发包
+        await page.waitForTimeout(10000);
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        // 此时按钮的 disabled 属性和隐藏状态已经被我们用上面的 JS 强行扒掉了，直接点击！
-        const potentialButtons = [
-            '.modal-dialog button',
-            '.modal-dialog .btn-success',
-            '.modal-dialog .btn-primary',
-            '.modal-footer button',
-            'button:has-text("Renew")',
-            'button:has-text("Add")'
-        ];
-
-        let clicked = false;
-        for (const selector of potentialButtons) {
-            const loc = page.locator(selector);
-            const count = await loc.count();
-            for (let i = 0; i < count; i++) {
-                const element = loc.nth(i);
-                if (await element.isVisible()) {
-                    console.log(`🚀 成功强行点击解封按钮: ${selector}`);
-                    await element.click({ force: true }).catch(() => null);
-                    clicked = true;
+        console.log('第三步：执行 API 逆向伪造发射...');
+        if (interceptedRequests.length > 0) {
+            console.log(`发现 ${interceptedRequests.length} 个潜在续期请求，正在尝试跨过前端限制，直接强行重放 API...`);
+            
+            // 循环使用浏览器底层上下文重新发射捕获到的网络请求
+            for (const req of interceptedRequests) {
+                try {
+                    console.log(`正在后台强行越狱发送 API -> ${req.url}`);
+                    const response = await page.evaluate(async (fetchData) => {
+                        const res = await fetch(fetchData.url, {
+                            method: fetchData.method,
+                            headers: fetchData.headers,
+                            body: fetchData.postData
+                        });
+                        return await res.text();
+                    }, req);
+                    console.log(`服务器响应结果预览: ${response.substring(0, 100)}`);
+                } catch (e) {
+                    console.log(`重放请求失败: ${e.message}`);
                 }
             }
+        } else {
+            console.log('⚠️ 未直接抓到显式 renew 请求，尝试执行终极表单/原生链接激活...');
+            // 如果它不是 ajax 请求，而是隐藏的超链接或按钮点击，我们直接在前端点击所有可能隐藏的提交路径
+            await page.evaluate(() => {
+                const links = document.querySelectorAll('a, button');
+                links.forEach(l => {
+                    if (l.innerText.includes('90') || l.href?.includes('renew')) {
+                        l.click();
+                    }
+                });
+            });
         }
 
-        if(!clicked) {
-            console.log("未找到显式按钮，尝试执行全网页盲点确认...");
-            await page.mouse.click(683, 440);
-        }
-
-        console.log('强突防指令已发出，原地等待 15 秒观察数据是否强制入库...');
-        await page.waitForTimeout(15000);
+        console.log('等待 10 秒让后端数据入库刷新...');
+        await page.waitForTimeout(10000);
+        
+        // 重新刷新一下页面，确保看到的是最干净、最新写入的时间
+        console.log('重新刷新页面查看最终入库状态...');
+        await page.reload({ waitUntil: 'networkidle' });
+        await page.waitForTimeout(4000);
+        
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
         await page.screenshot({ path: '4_final_result.png' });
 
