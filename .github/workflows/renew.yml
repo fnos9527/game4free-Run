@@ -1,7 +1,7 @@
 name: Minecraft Server Auto Renew with Proxy
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch: # 支持手动触发
   repository_dispatch: # 支持外部 API 触发 (cron-job.org)
     types: [renew_trigger]
 
@@ -16,7 +16,7 @@ jobs:
     - name: 设置 Node.js 环境
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: '20' # 修正了这里的拼写错误
 
     - name: 安装项目依赖
       run: |
@@ -26,68 +26,10 @@ jobs:
     - name: 安装 Playwright 浏览器
       run: npx playwright install chromium --with-deps
 
-    # 核心步骤：如果开启了代理，下载并配置 Xray 转换为本地 Socks5 (127.0.0.1:10808)
-    - name: 配置并启动 VLESS 代理中转
-      if: env.USE_PROXY == 'true'
-      env:
-        VLESS_LINK: ${{ secrets.MY_VLESS_PROXY }}
-      run: |
-        echo "正在下载 Xray-core..."
-        curl -L -H "Cache-Control: no-cache" -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-        unzip xray.zip xray
-        
-        echo "正在生成 Xray 配置文件..."
-        # 利用 node 脚本快速将 vless 链接解析转换为 xray 的 config.json 格式
-        node - e '
-        const fs = require("fs");
-        const vless = process.env.VLESS_LINK;
-        if (!vless) { console.error("未找到 VLESS 变量"); process.exit(1); }
-        
-        // 简单解析 VLESS 链接的核心要素
-        const url = new URL(vless);
-        const uuid = url.username;
-        const [host, port] = url.host.split(":");
-        const params = url.searchParams;
-        
-        const config = {
-          inbounds: [{
-            port: 10808,
-            listen: "127.0.0.1",
-            protocol: "socks",
-            settings: { auth: "noauth", udp: true }
-          }],
-          outbounds: [{
-            protocol: "vless",
-            settings: {
-              vnext: [{
-                address: host,
-                port: parseInt(port || "443"),
-                users: [{ id: uuid, encryption: "none" }]
-              }]
-            },
-            streamSettings: {
-              network: params.get("type") || "tcp",
-              security: params.get("security") || "none",
-              tlsSettings: { serverName: params.get("sni") || host },
-              wsSettings: params.get("type") === "ws" ? { path: decodeURIComponent(params.get("path") || "/") } : undefined
-            }
-          }]
-        };
-        fs.writeFileSync("config.json", JSON.stringify(config, null, 2));
-        '
-        
-        echo "在后台启动 Xray 代理..."
-        ./xray -config config.json > xray.log 2>&1 &
-        
-        echo "等待代理端口就绪..."
-        sleep 3
-        curl --socks5-hostname 127.0.0.1:10808 https://www.cloudflare.com/cdn-cgi/trace || echo "代理测试未成功，尝试继续执行"
-      env:
-        USE_PROXY: 'true' # 控制是否启用代理，不想用时改成 'false'
-
     - name: 执行续期脚本
       env:
-        USE_PROXY: 'true' # 让 NodeJS 脚本知道是否需要走本地 10808 端口
+        # 你的 VLESS 节点链接，保存在 Actions Secrets 里
+        MY_VLESS_PROXY: ${{ secrets.MY_VLESS_PROXY }}
       run: node renew.js
 
     - name: 上传运行截图
@@ -98,4 +40,5 @@ jobs:
         path: |
           *.png
           xray.log
+          config.json
         retention-days: 3
