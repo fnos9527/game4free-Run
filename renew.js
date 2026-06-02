@@ -56,7 +56,7 @@ function startXrayProxy(vlessLink) {
     }
 
     console.log('在后台启动 Xray 服务...');
-    const xrayProcess = exec('./xray -config config.json > xray.log 2>&1');
+    const xrayProcess = exec('././xray -config config.json > xray.log 2>&1');
     xrayProcess.unref();
 
     execSync('sleep 3');
@@ -71,11 +71,10 @@ function startXrayProxy(vlessLink) {
     }
 }
 
-// 在全局页面提取类似 05:23:12 的时间字符串
+// 在全局页面提取时间字符串
 async function extractServerTime(page) {
     try {
         const pageText = await page.innerText('body');
-        // 用正则匹配时分秒格式 xx:xx:xx
         const match = pageText.match(/\d{2}:\d{2}:\d{2}/);
         return match ? match[0] : '无法提取具体数字';
     } catch (e) {
@@ -93,7 +92,6 @@ async function extractServerTime(page) {
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
             '--blink-settings=imagesEnabled=true',
-            // 极限抹除自动化痕迹
             '--disable-blink-features=AutomationControlled'
         ]
     };
@@ -111,7 +109,6 @@ async function extractServerTime(page) {
         timezoneId: 'Europe/Amsterdam'
     });
 
-    // 终极绝招：抹除 window.navigator.webdriver 特征，不让 CF 发现这是无头自动化浏览器
     await context.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
@@ -135,32 +132,55 @@ async function extractServerTime(page) {
         await addBtn.click();
         console.log('已成功触发点击动作。');
         
-        await page.waitForTimeout(6000); 
+        // 【关键升级】给弹窗动画留出充足的加载与显现时间
+        console.log('等待弹窗和 Cloudflare 验证组件加载中...');
+        await page.waitForTimeout(8000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
         console.log('第三步：处理 Cloudflare 验证...');
-        // 寻找任何包含 cloudflare 的 iframe
-        const cfIframeSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"]';
-        await page.waitForSelector(cfIframeSelector, { timeout: 10000 }).catch(() => null);
         
-        const cfElement = await page.$(cfIframeSelector);
+        // 覆盖主流的 Cloudflare iframe 选择标记
+        const cfSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"], iframe[title*="Cloudflare"]';
+        
+        // 强制确保元素被渲染出来
+        await page.waitForSelector(cfSelector, { timeout: 15000 }).catch(() => null);
+        
+        const cfElement = await page.$(cfSelector);
         if (cfElement) {
-            console.log('成功捕获到 Cloudflare 容器，执行强行点击突破...');
-            // 获取整个容器的范围，并在其中央点击，逼迫没有显式复选框的强交互进行自我核验
+            console.log('已精确定位到 Cloudflare 验证框架。');
+            
+            // 策略 A：直接定位 iframe 内部的复选框区域点击
+            const cfFrame = page.frames().find(f => f.url().includes('cloudflare') || f.url().includes('challenge'));
+            let clickedInside = false;
+            
+            if (cfFrame) {
+                const innerBox = cfFrame.locator('#challenge-stage, input[type="checkbox"], #rc-anchor-container, .content').first();
+                if (await innerBox.count() > 0) {
+                    console.log('正在执行内部特定节点穿透点击...');
+                    await innerBox.click({ force: true, timeout: 5000 }).catch(() => null);
+                    clickedInside = true;
+                }
+            }
+            
+            // 策略 B：如果内部节点没点到，对整个容器进行正中心宏观点击（双保险）
             const box = await cfElement.boundingBox();
             if (box) {
-                // 在 iframe 的正中心偏左一点的位置模拟人工单点
-                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 100 });
-                console.log('已对验证容器中心实施模拟点击，等待 12 秒核验期...');
-                await page.waitForTimeout(12000);
+                console.log('正在执行容器宏观中心点模拟点击...');
+                // 往中心偏左移动一点，完美命中勾选框中心
+                await page.mouse.click(box.x + box.width / 2.3, box.y + box.height / 2, { delay: 120 });
             }
+            
+            console.log('点击指令完全送达，保持挂起状态 15 秒（等待 Cloudflare 响应完成）...');
+            await page.waitForTimeout(15000);
+            
         } else {
-            console.log('未检测到验证框架，可能已被安全放行。');
+            console.log('⚠️ 依然未能捕获到验证码 iframe，请确认弹窗中是否展示了验证框。');
         }
 
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
         console.log('第四步：检查续期后的时间状态...');
+        // 再次等待2秒，确保网页上的数据刷新完毕
         await page.waitForTimeout(2000);
         const endTime = await extractServerTime(page);
         console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
