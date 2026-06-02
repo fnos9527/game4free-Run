@@ -1,109 +1,175 @@
 const { chromium } = require('playwright');
-const path = require('path');
+const { exec, execSync } = require('child_process');
+const fs = require('fs');
 
-// 你的凭证，依然从环境变量读（如果你想在本地测，可以直接把那一长串 Cookie 贴在引号里）
-const COOKIE_STRING = process.env.MY_WEBSITE_COOKIE || ``;
-
-async function run() {
-    console.log('🤖 启动完美高精续期脚本...');
-    
-    // 启动浏览器，如果配置了本地代理（比如 xray 跑在 10808），Actions 里会自动走代理
-    const browser = await chromium.launch({
-        headless: true, 
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-
-    const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-        viewport: { width: 1366, height: 768 }
-    });
-
-    // 注入你抓到的 Cookie，这样免登录直接进页面
-    if (COOKIE_STRING) {
-        const cookies = COOKIE_STRING.split(';').map(pair => {
-            const [name, value] = pair.trim().split('=');
-            return {
-                name: name,
-                value: value,
-                domain: 'g4f.gg',
-                path: '/'
-            };
-        });
-        await context.addCookies(cookies);
-        console.log('🔑 Cookie 凭证注入成功');
+// 启动 Xray 代理中转
+function startXrayProxy(vlessLink) {
+    if (!vlessLink) {
+        console.log('⚠️ 未检测到 MY_VLESS_PROXY 变量，将不使用代理运行。');
+        return false;
+    }
+    console.log('正在下载 Xray-core...');
+    try {
+        execSync('curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip', { stdio: 'ignore' });
+        execSync('unzip -o xray.zip xray', { stdio: 'ignore' });
+        execSync('chmod +x xray', { stdio: 'ignore' });
+    } catch (err) {
+        console.error('❌ 下载或解压 Xray 失败:', err.message);
+        return false;
     }
 
+    console.log('正在解析 VLESS 链接并生成 config.json...');
+    try {
+        const url = new URL(vlessLink);
+        const uuid = url.username;
+        const [host, port] = url.host.split(':');
+        const params = url.searchParams;
+
+        const config = {
+            inbounds: [{
+                port: 10808,
+                listen: "127.0.0.1",
+                protocol: "socks",
+                settings: { auth: "noauth", udp: true }
+            }],
+            outbounds: [{
+                protocol: "vless",
+                settings: {
+                    vnext: [{
+                        address: host,
+                        port: parseInt(port || "443"),
+                        users: [{ id: uuid, encryption: "none" }]
+                    }]
+                },
+                streamSettings: {
+                    network: params.get("type") || "tcp",
+                    security: params.get("security") || "none",
+                    tlsSettings: { serverName: params.get("sni") || host },
+                    wsSettings: params.get("type") === "ws" ? { path: decodeURIComponent(params.get("path") || "/") } : undefined
+                }
+            }]
+        };
+        fs.writeFileSync('config.json', JSON.stringify(config, null, 2));
+    } catch (err) {
+        console.error('❌ 换算配置失败:', err.message);
+        return false;
+    }
+
+    console.log('在后台启动 Xray 服务...');
+    const xrayProcess = exec('./xray -config config.json > xray.log 2>&1');
+    xrayProcess.unref();
+
+    execSync('sleep 3');
+    console.log('验证代理是否成功畅通...');
+    try {
+        execSync('curl --socks5-hostname 127.0.0.1:10808 -m 5 https://www.cloudflare.com/cdn-cgi/trace', { stdio: 'ignore' });
+        console.log('✅ Xray 代理通道建立成功！');
+        return true;
+    } catch (e) {
+        console.log('⚠️ 代理联通测试失败，尝试继续运作。');
+        return true; 
+    }
+}
+
+// 在全局页面提取类似 05:23:12 的时间字符串
+async function extractServerTime(page) {
+    try {
+        const pageText = await page.innerText('body');
+        // 用正则匹配时分秒格式 xx:xx:xx
+        const match = pageText.match(/\d{2}:\d{2}:\d{2}/);
+        return match ? match[0] : '无法提取具体数字';
+    } catch (e) {
+        return '获取失败';
+    }
+}
+
+(async () => {
+    const vlessLink = process.env.MY_VLESS_PROXY;
+    const isProxyActive = startXrayProxy(vlessLink);
+
+    const launchOptions = {
+        headless: true,
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
+            '--blink-settings=imagesEnabled=true',
+            // 极限抹除自动化痕迹
+            '--disable-blink-features=AutomationControlled'
+        ]
+    };
+
+    if (isProxyActive) {
+        console.log('配置 Playwright 浏览器走本地代理: socks5://127.0.0.1:10808');
+        launchOptions.proxy = { server: 'socks5://127.0.0.1:10808' };
+    }
+
+    const browser = await chromium.launch(launchOptions);
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        viewport: { width: 1366, height: 768 },
+        locale: 'en-US',
+        timezoneId: 'Europe/Amsterdam'
+    });
+
+    // 终极绝招：抹除 window.navigator.webdriver 特征，不让 CF 发现这是无头自动化浏览器
+    await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+    
     const page = await context.newPage();
-
-    // 监控核心的 POST 请求，一旦发现目标发出去了，就说明成了！
-    page.on('request', request => {
-        if (request.url().includes('/myserverbbr') && request.method() === 'POST') {
-            console.log('🚀 检测到关键续期 POST 请求已发出！');
-        }
-    });
-
-    page.on('response', async response => {
-        if (response.url().includes('/myserverbbr') && response.method() === 'POST') {
-            console.log(`📡 收到后端响应状态码: ${response.status()}`);
-        }
-    });
 
     try {
         console.log('第一步：正在打开目标网页...');
         await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
-
-        // 打印初始时间
-        const initialTime = await page.evaluate(() => document.body.innerText.match(/(\d{2}):(\d{2}):(\d{2})/)?.[0]);
-        console.log(`⏱️ 网页初始剩余时间: ${initialTime || '未检测到'}`);
-
-        console.log('第二步：点击 + ADD 90 MIN 按钮唤出弹窗...');
-        const addBtn = await page.locator('button:has-text("+ ADD 90 MIN")');
-        await addBtn.click();
         
-        console.log('第三步：等待 Cloudflare Turnstile 验证码组件加载...');
-        // 等待嵌入验证码的 iframe 出现
-        await page.waitForTimeout(5000); // 稳妥起见先歇 5 秒
+        await page.waitForTimeout(4000);
+        const initialTime = await extractServerTime(page);
+        console.log(`⏱️ 网页初始剩余时间: ${initialTime}`);
+        await page.screenshot({ path: '1_initial_status.png' });
 
-        // 穿透 Iframe 寻找 Cloudflare 的打勾框
-        const frames = page.frames();
-        let targetFrame = null;
-        for (const frame of frames) {
-            if (frame.url().includes('cloudflare')) {
-                targetFrame = frame;
-                break;
-            }
+        console.log('第二步：点击 + ADD 90 MIN 按钮...');
+        let addBtn = page.locator('text="+ ADD 90 MIN"').first();
+        if (await addBtn.count() === 0) {
+            addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
+        await addBtn.click();
+        console.log('已成功触发点击动作。');
+        
+        await page.waitForTimeout(6000); 
+        await page.screenshot({ path: '2_after_click_popup.png' });
 
-        if (targetFrame) {
-            console.log('🎯 成功锁定 Cloudflare 验证码框架，尝试模拟点击打勾...');
-            // 尝试点击 Cloudflare 的那个神秘的小方框（它的 id 或 class 经常带 checkbox）
-            const checkbox = await targetFrame.locator('#challenge-stage, .mark, input[type="checkbox"]');
-            if (await checkbox.count() > 0) {
-                await checkbox.first().click({ timeout: 5000 });
-                console.log('👆 已点击打勾复选框！');
-            } else {
-                console.log('⚠ 锁定了框架但没找到方框，可能它在尝试自动通过...');
+        console.log('第三步：处理 Cloudflare 验证...');
+        // 寻找任何包含 cloudflare 的 iframe
+        const cfIframeSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"]';
+        await page.waitForSelector(cfIframeSelector, { timeout: 10000 }).catch(() => null);
+        
+        const cfElement = await page.$(cfIframeSelector);
+        if (cfElement) {
+            console.log('成功捕获到 Cloudflare 容器，执行强行点击突破...');
+            // 获取整个容器的范围，并在其中央点击，逼迫没有显式复选框的强交互进行自我核验
+            const box = await cfElement.boundingBox();
+            if (box) {
+                // 在 iframe 的正中心偏左一点的位置模拟人工单点
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 100 });
+                console.log('已对验证容器中心实施模拟点击，等待 12 秒核验期...');
+                await page.waitForTimeout(12000);
             }
         } else {
-            console.log('⚠ 未在弹窗中发现 Cloudflare 框架，可能它直接加载在主页或被拦截了。');
+            console.log('未检测到验证框架，可能已被安全放行。');
         }
 
-        // 原地等待 15 秒，给验证码通过、广告倒计时以及最终提交请求留出充足时间
-        console.log('⏳ 正在等待后端处理与数据入库...');
-        await page.waitForTimeout(15000);
+        await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
-        // 刷新页面查看最终状态
-        console.log('第四步：重新刷新页面查看最终状态...');
-        await page.reload({ waitUntil: 'networkidle' });
-        
-        const finalTime = await page.evaluate(() => document.body.innerText.match(/(\d{2}):(\d{2}):(\d{2})/)?.[0]);
-        console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${finalTime || '未检测到'}`);
+        console.log('第四步：检查续期后的时间状态...');
+        await page.waitForTimeout(2000);
+        const endTime = await extractServerTime(page);
+        console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
 
     } catch (error) {
-        console.error('❌ 脚本执行发生错误:', error);
+        console.error('流程中遭遇异常中止:', error);
+        await page.screenshot({ path: 'error_screenshot.png' });
     } finally {
         await browser.close();
+        try { execSync('pkill -f xray'); } catch(e){}
     }
-}
-
-run();
+})();
