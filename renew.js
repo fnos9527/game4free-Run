@@ -67,7 +67,7 @@ function startXrayProxy(vlessLink) {
         return true;
     } catch (e) {
         console.log('⚠️ 代理联通测试失败，尝试继续运作。');
-        return true; 
+        return true;
     }
 }
 
@@ -75,11 +75,90 @@ function startXrayProxy(vlessLink) {
 async function extractServerTime(page) {
     try {
         const pageText = await page.innerText('body');
-        // 用正则匹配时分秒格式 xx:xx:xx
         const match = pageText.match(/\d{2}:\d{2}:\d{2}/);
         return match ? match[0] : '无法提取具体数字';
     } catch (e) {
         return '获取失败';
+    }
+}
+
+// 处理 Cloudflare Turnstile 验证
+async function handleTurnstile(page) {
+    console.log('正在等待 Cloudflare 验证模态框出现...');
+
+    // 等待模态框标题出现
+    const modalAppeared = await page.waitForSelector('text="Verify you are human"', { timeout: 12000 })
+        .catch(() => null);
+
+    if (!modalAppeared) {
+        console.log('✅ 未出现验证框，可能已被直接放行。');
+        return true;
+    }
+
+    console.log('检测到验证模态框，正在寻找 Turnstile iframe...');
+
+    // 等待 Turnstile iframe 加载（src 包含 challenges.cloudflare.com）
+    const iframeHandle = await page.waitForSelector(
+        'iframe[src*="challenges.cloudflare.com"]',
+        { timeout: 10000 }
+    ).catch(() => null);
+
+    if (!iframeHandle) {
+        console.log('⚠️ 未找到 Turnstile iframe，尝试用坐标点击复选框位置...');
+        // 兜底：根据截图中复选框的大致绝对位置直接点击
+        const box = await page.locator('text="Verify you are human"').boundingBox().catch(() => null);
+        if (box) {
+            // 复选框大概在标题下方约 60px，左侧约 30px 处
+            await page.mouse.click(box.x + 30, box.y + 60, { delay: 100 });
+            console.log('已对估算位置实施点击，等待 15 秒...');
+            await page.waitForTimeout(15000);
+        }
+        return false;
+    }
+
+    console.log('✅ 找到 Turnstile iframe，切入 frame 内部点击复选框...');
+
+    // 获取 iframe 对应的 Frame 对象
+    const frame = await iframeHandle.contentFrame();
+    if (!frame) {
+        console.log('⚠️ 无法切入 iframe frame context。');
+        return false;
+    }
+
+    // 等待复选框渲染完成
+    await frame.waitForTimeout(1500);
+
+    // 尝试方式1：直接点击 input[type="checkbox"]
+    const checkbox = await frame.$('input[type="checkbox"]');
+    if (checkbox) {
+        console.log('找到 checkbox 元素，执行点击...');
+        await checkbox.click({ delay: 80 });
+    } else {
+        // 尝试方式2：点击整个 body 的左侧区域（Turnstile widget 通常在左边）
+        console.log('未找到 checkbox 元素，点击 widget 左侧区域...');
+        const bodyBox = await frame.locator('body').boundingBox().catch(() => null);
+        if (bodyBox) {
+            await frame.locator('body').click({
+                position: { x: Math.min(30, bodyBox.width * 0.15), y: bodyBox.height / 2 },
+                delay: 80
+            });
+        }
+    }
+
+    console.log('已点击，等待 Turnstile 自动核验（最多 30 秒）...');
+
+    // 等待模态框消失，说明验证通过
+    const verified = await page.waitForSelector('text="Verify you are human"', {
+        state: 'hidden',
+        timeout: 30000
+    }).catch(() => null);
+
+    if (verified !== null || !(await page.$('text="Verify you are human"'))) {
+        console.log('🎉 Cloudflare Turnstile 验证通过！');
+        return true;
+    } else {
+        console.log('⚠️ 验证框依然存在，验证可能未通过。');
+        return false;
     }
 }
 
@@ -90,11 +169,14 @@ async function extractServerTime(page) {
     const launchOptions = {
         headless: true,
         args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
             '--blink-settings=imagesEnabled=true',
-            // 极限抹除自动化痕迹
-            '--disable-blink-features=AutomationControlled'
+            '--disable-blink-features=AutomationControlled',
+            // 额外增强反检测
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--flag-switches-begin',
+            '--flag-switches-end'
         ]
     };
 
@@ -108,20 +190,51 @@ async function extractServerTime(page) {
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
         viewport: { width: 1366, height: 768 },
         locale: 'en-US',
-        timezoneId: 'Europe/Amsterdam'
+        timezoneId: 'Europe/Amsterdam',
+        extraHTTPHeaders: {
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        javaScriptEnabled: true,
+        hasTouch: false,
+        isMobile: false,
     });
 
-    // 终极绝招：抹除 window.navigator.webdriver 特征，不让 CF 发现这是无头自动化浏览器
+    // 更完整的反自动化检测抹除
     await context.addInitScript(() => {
+        // 抹除 webdriver 标志
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        // 伪造插件数量（无头浏览器通常为 0，会被识别）
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+                const arr = [1, 2, 3, 4, 5];
+                arr.item = (i) => arr[i];
+                arr.namedItem = () => null;
+                arr.refresh = () => {};
+                return arr;
+            }
+        });
+        // 伪造语言列表
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        // 修复 chrome 对象（无头模式下有时缺失）
+        if (!window.chrome) {
+            window.chrome = { runtime: {} };
+        }
+        // 修复 permissions（无头下 query 返回行为异常）
+        const originalQuery = window.navigator.permissions?.query;
+        if (originalQuery) {
+            window.navigator.permissions.query = (parameters) =>
+                parameters.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : originalQuery(parameters);
+        }
     });
-    
+
     const page = await context.newPage();
 
     try {
         console.log('第一步：正在打开目标网页...');
         await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
-        
+
         await page.waitForTimeout(4000);
         const initialTime = await extractServerTime(page);
         console.log(`⏱️ 网页初始剩余时间: ${initialTime}`);
@@ -132,44 +245,44 @@ async function extractServerTime(page) {
         if (await addBtn.count() === 0) {
             addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
+        // 确保按钮在视口内再点击
+        await addBtn.scrollIntoViewIfNeeded();
         await addBtn.click();
         console.log('已成功触发点击动作。');
-        
-        await page.waitForTimeout(6000); 
+
+        await page.waitForTimeout(3000);
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare 验证...');
-        // 寻找任何包含 cloudflare 的 iframe
-        const cfIframeSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"]';
-        await page.waitForSelector(cfIframeSelector, { timeout: 10000 }).catch(() => null);
-        
-        const cfElement = await page.$(cfIframeSelector);
-        if (cfElement) {
-            console.log('成功捕获到 Cloudflare 容器，执行强行点击突破...');
-            // 获取整个容器的范围，并在其中央点击，逼迫没有显式复选框的强交互进行自我核验
-            const box = await cfElement.boundingBox();
-            if (box) {
-                // 在 iframe 的正中心偏左一点的位置模拟人工单点
-                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 100 });
-                console.log('已对验证容器中心实施模拟点击，等待 12 秒核验期...');
-                await page.waitForTimeout(12000);
-            }
-        } else {
-            console.log('未检测到验证框架，可能已被安全放行。');
-        }
+        console.log('第三步：处理 Cloudflare Turnstile 验证...');
+        const captchaPassed = await handleTurnstile(page);
+        console.log(`验证处理结果: ${captchaPassed ? '通过' : '未确认通过'}`);
 
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
         console.log('第四步：检查续期后的时间状态...');
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(3000);
         const endTime = await extractServerTime(page);
         console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
+
+        // 简单判断是否续期成功
+        const parseSeconds = (t) => {
+            const parts = t.split(':').map(Number);
+            return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        };
+        if (initialTime !== '无法提取具体数字' && endTime !== '无法提取具体数字') {
+            const diff = parseSeconds(endTime) - parseSeconds(initialTime);
+            if (diff > 0) {
+                console.log(`✅ 续期成功！时间增加了约 ${Math.round(diff / 60)} 分钟。`);
+            } else {
+                console.log('❌ 时间未增加，续期可能失败，请检查截图。');
+            }
+        }
 
     } catch (error) {
         console.error('流程中遭遇异常中止:', error);
         await page.screenshot({ path: 'error_screenshot.png' });
     } finally {
         await browser.close();
-        try { execSync('pkill -f xray'); } catch(e){}
+        try { execSync('pkill -f xray'); } catch (e) {}
     }
 })();
