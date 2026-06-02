@@ -1,57 +1,44 @@
-name: Server Auto Renew
+name: Minecraft Server Auto Renew with Proxy
 
 on:
-  schedule:
-    # 每 1 小时自动运行一次（每次成功续期 90 分钟）
-    - cron: '0 */1 * * *'
-  workflow_dispatch: # 支持手动点击运行
+  workflow_dispatch: # 支持手动触发
+  repository_dispatch: # 支持外部 API 触发 (cron-job.org)
+    types: [renew_trigger]
 
 jobs:
   renew:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
+    - name: 检出代码
       uses: actions/checkout@v4
 
-    - name: Setup Node.js
+    - name: 设置 Node.js 环境
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '20' # 修正了这里的拼写错误
 
-    - name: 下载并配置 Xray 代理
+    - name: 安装项目依赖
       run: |
-        echo "正在下载 Xray-core..."
-        curl -L -H "User-Agent: Mozilla/5.0" -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-        unzip -q xray.zip
-        chmod +x xray
-        
-        echo "正在启动 Xray 代理服务..."
-        ./xray -c config.json > xray.log 2>&1 &
-        
-        echo "原地等待 3 秒等待代理建立连接..."
-        sleep 3
-        
-        echo "检查 Xray 是否成功启动："
-        ps aux | grep xray
+        npm init -y
+        npm install playwright
 
-    - name: 安装项目依赖 (Axios & Playwright)
-      run: |
-        # 强制清空一下可能残留的缓存，重新干净地安装
-        npm install axios playwright
-        # 用刚刚安装好的局部 npx 路径去装 chromium
-        ./node_modules/.bin/playwright install chromium
+    - name: 安装 Playwright 浏览器
+      run: npx playwright install chromium --with-deps
 
-    - name: 运行续期脚本 (通过虚拟桌面环境)
+    - name: 执行续期脚本
       env:
-        MY_WEBSITE_COOKIE: ${{ secrets.MY_WEBSITE_COOKIE }}
-        HTTP_PROXY: "socks5://127.0.0.1:10808"
-        HTTPS_PROXY: "socks5://127.0.0.1:10808"
-      run: |
-        xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24" node renew.js
+        # 你的 VLESS 节点链接，保存在 Actions Secrets 里
+        MY_VLESS_PROXY: ${{ secrets.MY_VLESS_PROXY }}
+      run: node renew.js
 
-    - name: 打印 Xray 运行日志 (可选-用于排查代理问题)
+    - name: 上传运行截图
+      uses: actions/upload-artifact@v4
       if: always()
-      run: |
-        echo "=== Xray 运行日志片段 ==="
-        tail -n 20 xray.log || true
+      with:
+        name: execution-screenshots
+        path: |
+          *.png
+          xray.log
+          config.json
+        retention-days: 3
