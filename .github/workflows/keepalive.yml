@@ -21,6 +21,8 @@ jobs:
         run: |
           wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y /tmp/chrome.deb
+          # 打印路径，方便调试
+          which google-chrome || true
           google-chrome --version
 
       - name: Install Xray
@@ -138,7 +140,11 @@ jobs:
           ss -tlnp | grep 10808 && echo "✅ Socks5 :10808 就绪" || (echo "❌ Socks5 未启动，退出" && exit 1)
 
       - name: Run keepalive
-        run: python keepalive.py
+        run: |
+          # 把 chrome 路径告诉脚本
+          export CHROME_BIN=$(which google-chrome || which google-chrome-stable || echo "")
+          echo "CHROME_BIN=$CHROME_BIN"
+          python keepalive.py
 
       - name: Upload screenshots
         if: always()
