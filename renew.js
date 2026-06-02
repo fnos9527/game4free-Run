@@ -84,36 +84,17 @@ async function extractServerTime(page) {
 
 // 处理 Cloudflare Turnstile 验证
 async function handleTurnstile(page) {
-    console.log('正在等待 Cloudflare 验证模态框出现...');
+    console.log('正在等待 Cloudflare Turnstile iframe 出现...');
 
-    // 等待模态框标题出现
-    const modalAppeared = await page.waitForSelector('text="Verify you are human"', { timeout: 12000 })
-        .catch(() => null);
-
-    if (!modalAppeared) {
-        console.log('✅ 未出现验证框，可能已被直接放行。');
-        return true;
-    }
-
-    console.log('检测到验证模态框，正在寻找 Turnstile iframe...');
-
-    // 等待 Turnstile iframe 加载（src 包含 challenges.cloudflare.com）
+    // 直接等待 Turnstile iframe，不依赖任何文字匹配（避免大小写/措辞差异）
     const iframeHandle = await page.waitForSelector(
         'iframe[src*="challenges.cloudflare.com"]',
-        { timeout: 10000 }
+        { timeout: 12000 }
     ).catch(() => null);
 
     if (!iframeHandle) {
-        console.log('⚠️ 未找到 Turnstile iframe，尝试用坐标点击复选框位置...');
-        // 兜底：根据截图中复选框的大致绝对位置直接点击
-        const box = await page.locator('text="Verify you are human"').boundingBox().catch(() => null);
-        if (box) {
-            // 复选框大概在标题下方约 60px，左侧约 30px 处
-            await page.mouse.click(box.x + 30, box.y + 60, { delay: 100 });
-            console.log('已对估算位置实施点击，等待 15 秒...');
-            await page.waitForTimeout(15000);
-        }
-        return false;
+        console.log('✅ 未检测到 Turnstile iframe，可能已被直接放行。');
+        return true;
     }
 
     console.log('✅ 找到 Turnstile iframe，切入 frame 内部点击复选框...');
@@ -121,25 +102,32 @@ async function handleTurnstile(page) {
     // 获取 iframe 对应的 Frame 对象
     const frame = await iframeHandle.contentFrame();
     if (!frame) {
-        console.log('⚠️ 无法切入 iframe frame context。');
+        console.log('⚠️ 无法切入 iframe frame context，改用坐标兜底点击...');
+        const box = await iframeHandle.boundingBox();
+        if (box) {
+            // 复选框固定在 Turnstile widget 左侧约 1/6 宽度处
+            await page.mouse.click(box.x + box.width * 0.15, box.y + box.height / 2, { delay: 100 });
+            console.log('已对 iframe 坐标位置点击，等待 20 秒...');
+            await page.waitForTimeout(20000);
+        }
         return false;
     }
 
-    // 等待复选框渲染完成
-    await frame.waitForTimeout(1500);
+    // 等待 frame 内部内容渲染完毕
+    await frame.waitForTimeout(2000);
 
-    // 尝试方式1：直接点击 input[type="checkbox"]
+    // 尝试方式1：直接找并点击 input[type="checkbox"]
     const checkbox = await frame.$('input[type="checkbox"]');
     if (checkbox) {
         console.log('找到 checkbox 元素，执行点击...');
         await checkbox.click({ delay: 80 });
     } else {
-        // 尝试方式2：点击整个 body 的左侧区域（Turnstile widget 通常在左边）
+        // 尝试方式2：点击 body 左侧区域（Turnstile widget 的勾选区域固定在左边）
         console.log('未找到 checkbox 元素，点击 widget 左侧区域...');
         const bodyBox = await frame.locator('body').boundingBox().catch(() => null);
         if (bodyBox) {
             await frame.locator('body').click({
-                position: { x: Math.min(30, bodyBox.width * 0.15), y: bodyBox.height / 2 },
+                position: { x: Math.min(35, bodyBox.width * 0.15), y: bodyBox.height / 2 },
                 delay: 80
             });
         }
@@ -147,14 +135,16 @@ async function handleTurnstile(page) {
 
     console.log('已点击，等待 Turnstile 自动核验（最多 30 秒）...');
 
-    // 等待模态框消失，说明验证通过
-    const verified = await page.waitForSelector('text="Verify you are human"', {
-        state: 'hidden',
-        timeout: 30000
-    }).catch(() => null);
+    // 等待 iframe 消失或不再可见，说明验证通过、模态框关闭
+    const iframeGone = await page.waitForSelector(
+        'iframe[src*="challenges.cloudflare.com"]',
+        { state: 'hidden', timeout: 30000 }
+    ).catch(() => null);
 
-    if (verified !== null || !(await page.$('text="Verify you are human"'))) {
-        console.log('🎉 Cloudflare Turnstile 验证通过！');
+    // 再次确认 iframe 是否还在
+    const stillThere = await page.$('iframe[src*="challenges.cloudflare.com"]');
+    if (!stillThere) {
+        console.log('🎉 Cloudflare Turnstile 验证通过，模态框已关闭！');
         return true;
     } else {
         console.log('⚠️ 验证框依然存在，验证可能未通过。');
