@@ -23,8 +23,79 @@ jobs:
           sudo apt-get install -y /tmp/chrome.deb
           google-chrome --version
 
+      - name: Install Xray
+        run: |
+          # 下载 xray-core
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O /tmp/xray.zip
+          sudo unzip -q /tmp/xray.zip -d /usr/local/xray
+          sudo chmod +x /usr/local/xray/xray
+          /usr/local/xray/xray version
+
       - name: Install Python deps
         run: pip install -q nodriver
+
+      - name: Write Xray config & start
+        env:
+          VMESS_LINK: ${{ secrets.VMESS_LINK }}
+        run: |
+          python3 -c "
+          import os, base64, json
+
+          vmess = os.environ['VMESS_LINK']
+          # 去掉 vmess:// 前缀再解码
+          b64 = vmess.replace('vmess://', '')
+          info = json.loads(base64.b64decode(b64 + '==').decode())
+
+          cfg = {
+            'log': {'loglevel': 'warning'},
+            'inbounds': [{
+              'port': 10808,
+              'listen': '127.0.0.1',
+              'protocol': 'socks',
+              'settings': {'auth': 'noauth', 'udp': True}
+            }],
+            'outbounds': [{
+              'protocol': 'vmess',
+              'settings': {
+                'vnext': [{
+                  'address': info['add'],
+                  'port': int(info['port']),
+                  'users': [{
+                    'id': info['id'],
+                    'alterId': int(info.get('aid', 0)),
+                    'security': info.get('scy', 'auto')
+                  }]
+                }]
+              },
+              'streamSettings': {
+                'network': info.get('net', 'ws'),
+                'security': info.get('tls', ''),
+                'tlsSettings': {
+                  'serverName': info.get('sni', info.get('host', '')),
+                  'allowInsecure': bool(int(info.get('insecure', 0)))
+                },
+                'wsSettings': {
+                  'path': info.get('path', '/'),
+                  'headers': {'Host': info.get('host', '')}
+                }
+              }
+            }]
+          }
+
+          with open('/tmp/xray_config.json', 'w') as f:
+              json.dump(cfg, f, indent=2)
+          print('Xray config written.')
+          print(f'  -> {info[\"add\"]}:{info[\"port\"]} via ws+tls')
+          "
+
+          # 启动 xray 后台
+          nohup /usr/local/xray/xray run -c /tmp/xray_config.json > /tmp/xray.log 2>&1 &
+          echo "Xray PID: $!"
+          sleep 3
+
+          # 验证 socks5 是否在监听
+          ss -tlnp | grep 10808 && echo "✅ Socks5 :10808 已就绪" || echo "❌ Socks5 未启动"
+          cat /tmp/xray.log
 
       - name: Run keepalive
         run: python keepalive.py
