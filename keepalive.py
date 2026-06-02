@@ -5,11 +5,13 @@ import re
 TARGET = "https://g4f.gg/myserverbbr"
 SOCKS5 = "socks5://127.0.0.1:10808"
 
+
 def parse_seconds(t: str) -> int:
     m = re.findall(r'\d+', t)
     if len(m) >= 3:
         return int(m[0]) * 3600 + int(m[1]) * 60 + int(m[2])
     return 0
+
 
 async def get_timer(page) -> str:
     try:
@@ -27,6 +29,7 @@ async def get_timer(page) -> str:
         return m.group(0) if m else "未知"
     except Exception as e:
         return f"获取失败({e})"
+
 
 async def main():
     import nodriver as uc
@@ -54,7 +57,7 @@ async def main():
         time_before = await get_timer(page)
         print(f"⏱️   点击前时间: {time_before}")
 
-        # ── 点击按钮 ──────────────────────────────────────────
+        # ── 点击 +ADD 90 MIN ──────────────────────────────────
         print("\n🖱️   点击 +ADD 90 MIN ...")
         clicked = await page.evaluate("""
         (() => {
@@ -122,6 +125,7 @@ async def main():
     finally:
         await browser.stop()
         print("✅  完成")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
