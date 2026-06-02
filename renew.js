@@ -14,11 +14,9 @@ function startXrayProxy(vlessLink) {
         execSync('unzip -o xray.zip xray', { stdio: 'ignore' });
         execSync('chmod +x xray', { stdio: 'ignore' });
     } catch (err) {
-        console.error('❌ 下载或解压 Xray 失败:', err.message);
         return false;
     }
 
-    console.log('正在解析 VLESS 链接并生成 config.json...');
     try {
         const url = new URL(vlessLink);
         const uuid = url.username;
@@ -51,27 +49,15 @@ function startXrayProxy(vlessLink) {
         };
         fs.writeFileSync('config.json', JSON.stringify(config, null, 2));
     } catch (err) {
-        console.error('❌ 换算配置失败:', err.message);
         return false;
     }
 
-    console.log('在后台启动 Xray 服务...');
     const xrayProcess = exec('./xray -config config.json > xray.log 2>&1');
     xrayProcess.unref();
-
     execSync('sleep 3');
-    console.log('验证代理是否成功畅通...');
-    try {
-        execSync('curl --socks5-hostname 127.0.0.1:10808 -m 5 https://www.cloudflare.com/cdn-cgi/trace', { stdio: 'ignore' });
-        console.log('✅ Xray 代理通道建立成功！');
-        return true;
-    } catch (e) {
-        console.log('⚠️ 代理联通测试失败，尝试继续运作。');
-        return true; 
-    }
+    return true;
 }
 
-// 在全局页面提取时间字符串
 async function extractServerTime(page) {
     try {
         const pageText = await page.innerText('body');
@@ -97,7 +83,6 @@ async function extractServerTime(page) {
     };
 
     if (isProxyActive) {
-        console.log('配置 Playwright 浏览器走本地代理: socks5://127.0.0.1:10808');
         launchOptions.proxy = { server: 'socks5://127.0.0.1:10808' };
     }
 
@@ -130,66 +115,60 @@ async function extractServerTime(page) {
             addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
         await addBtn.click();
-        console.log('已成功触发点击动作。');
         
         console.log('等待弹窗和 Cloudflare 验证组件加载...');
         await page.waitForTimeout(10000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare 验证（原生指引与动态坐标融合模式）...');
-        
-        // 针对原生渲染和嵌入式 Turnstile 组件的混合选择器
+        console.log('第三步：处理 Cloudflare 验证...');
         const captchaSelector = '.cf-turnstile, [class*="cf-turnstile"], #cf-turnstile, [id*="cf-"]';
-        
-        // 先看看能不能直接抓到这个原生组件元素
         const captchaElement = await page.$(captchaSelector);
         
         if (captchaElement) {
             console.log('🎯 成功在 DOM 树中捕捉到原生的 Turnstile 验证组件。');
             const box = await captchaElement.boundingBox();
             if (box) {
-                // 根据视觉原理，整个验证横条中，勾选方块位于偏左侧大约 30 到 40 像素的位置
-                // 咱们通过盒模型算出相对精准的左侧中心坐标
                 const targetX = box.x + 35; 
                 const targetY = box.y + (box.height / 2);
                 
-                console.log(`计算得出验证方块精准坐标: [X:${targetX.toFixed(1)}, Y:${targetY.toFixed(1)}]`);
-                
-                // 模拟真人平滑滑过去，并开火点击
                 await page.mouse.move(targetX, targetY, { steps: 12 });
                 await page.waitForTimeout(200);
                 await page.mouse.click(targetX, targetY, { delay: 150 });
-                console.log('精准打击指令已发出。');
-            }
-        } else {
-            console.log('⚠️ 未能找到原生组件类名，启动后备弹窗视觉相对坐标轰炸...');
-            // 既然在模态框里，我们获取当前弹窗里那个显示了“Loading...”或者验证区域的大区块位置
-            const modalBody = await page.$('.modal-body, [class*="modal-content"]');
-            if (modalBody) {
-                const mBox = await modalBody.boundingBox();
-                if (mBox) {
-                    // Turnstile 通常位于 modal 内部靠下的水平居中偏左侧
-                    const targetX = mBox.x + (mBox.width / 2) - 110; 
-                    const targetY = mBox.y + (mBox.height / 2) + 15;
-                    console.log(`通过模态框算出的相对坐标: [X:${targetX}, Y:${targetY}]`);
-                    await page.mouse.move(targetX, targetY, { steps: 10 });
-                    await page.mouse.click(targetX, targetY, { delay: 120 });
-                }
+                console.log('👉 已成功点击验证码复选框，等待 6 秒让绿勾生成...');
+                await page.waitForTimeout(6000);
             }
         }
 
-        console.log('等待 15 秒让 Cloudflare 校验完成并写入后端...');
-        await page.waitForTimeout(15000);
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
-        console.log('第四步：检查续期后的时间状态...');
-        await page.waitForTimeout(2000);
+        // 【关键修复】人机验证变绿后，点击弹窗里的最终提交/续期按钮
+        console.log('第四步：寻找并点击弹窗提交按钮...');
+        // 尝试匹配常见的提交按钮文本，如 "Renew", "Submit", "Confirm", "OK" 或者带有 btn-primary 属性的按钮
+        let submitBtn = page.locator('.modal-dialog button:has-text("Renew"), .modal-dialog button:has-text("Submit"), .modal-dialog button:has-text("OK")').first();
+        
+        if (await submitBtn.count() === 0) {
+            // 如果找不到特定文本，就找模态框里的主按钮
+            submitBtn = page.locator('.modal-dialog .btn-primary, .modal-footer .btn').first();
+        }
+
+        if (await submitBtn.count() > 0 && await submitBtn.isVisible()) {
+            console.log('🚀 检测到确认提交按钮，正在点击以完成续期...');
+            await submitBtn.click();
+            // 给后端入库留出 10 秒刷新时间
+            await page.waitForTimeout(10000);
+        } else {
+            console.log('ℹ️ 未发现额外的提交按钮，可能绿勾后会自动提交，多等待 5 秒...');
+            await page.waitForTimeout(5000);
+        }
+
+        await page.screenshot({ path: '4_final_result.png' });
+
+        console.log('第五步：检查续期后的时间状态...');
         const endTime = await extractServerTime(page);
         console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
 
     } catch (error) {
         console.error('流程中遭遇异常中止:', error);
-        await page.screenshot({ path: 'error_screenshot.png' });
     } finally {
         await browser.close();
         try { execSync('pkill -f xray'); } catch(e){}
