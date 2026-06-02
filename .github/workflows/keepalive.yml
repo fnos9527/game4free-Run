@@ -25,7 +25,6 @@ jobs:
 
       - name: Install Xray
         run: |
-          # 下载 xray-core
           wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O /tmp/xray.zip
           sudo unzip -q /tmp/xray.zip -d /usr/local/xray
           sudo chmod +x /usr/local/xray/xray
@@ -36,66 +35,111 @@ jobs:
 
       - name: Write Xray config & start
         env:
-          VMESS_LINK: ${{ secrets.VMESS_LINK }}
+          PROXY_LINK: ${{ secrets.PROXY_LINK }}
         run: |
-          python3 -c "
-          import os, base64, json
+          python3 << 'PYEOF'
+          import os, json, re
+          from urllib.parse import urlparse, parse_qs
 
-          vmess = os.environ['VMESS_LINK']
-          # 去掉 vmess:// 前缀再解码
-          b64 = vmess.replace('vmess://', '')
-          info = json.loads(base64.b64decode(b64 + '==').decode())
+          raw = os.environ['PROXY_LINK'].strip()
+          u = urlparse(raw)
+          qs = parse_qs(u.query)
+
+          def q(key, default=''):
+              return qs.get(key, [default])[0]
+
+          proto    = u.scheme          # vless / vmess / trojan
+          address  = u.hostname
+          port     = int(u.port)
+          security = q('security', 'none')
+          sni      = q('sni', '')
+          fp       = q('fp', 'chrome')
+          network  = q('type', 'tcp')
+
+          print(f"协议: {proto}  地址: {address}:{port}  网络: {network}  安全: {security}")
+
+          # ── TLS 设置（新版 xray 用 allowInsecure 布尔值，不用 pinnedPeerCertSha256）
+          tls_cfg = {
+              "serverName": sni or address,
+              "fingerprint": fp,
+              "allowInsecure": True
+          }
+
+          # ── 流量设置
+          stream = {"network": network, "security": security}
+          if security == "tls":
+              stream["tlsSettings"] = tls_cfg
+          elif security == "reality":
+              stream["realitySettings"] = {
+                  "serverName": sni,
+                  "fingerprint": fp,
+                  "publicKey": q('pbk'),
+                  "shortId": q('sid'),
+              }
+
+          if network == "ws":
+              stream["wsSettings"] = {
+                  "path": q('path', '/'),
+                  "headers": {"Host": q('host', sni)}
+              }
+          elif network == "tcp":
+              stream["tcpSettings"] = {"header": {"type": q('headerType', 'none')}}
+          elif network == "grpc":
+              stream["grpcSettings"] = {"serviceName": q('serviceName', '')}
+
+          # ── 出站配置
+          if proto == "vless":
+              outbound_settings = {
+                  "vnext": [{
+                      "address": address, "port": port,
+                      "users": [{"id": u.username, "encryption": "none", "flow": q('flow','')}]
+                  }]
+              }
+          elif proto == "vmess":
+              import base64
+              b64 = raw.replace('vmess://', '')
+              info = json.loads(base64.b64decode(b64 + '==').decode())
+              address = info['add']; port = int(info['port'])
+              outbound_settings = {
+                  "vnext": [{
+                      "address": address, "port": port,
+                      "users": [{"id": info['id'], "alterId": int(info.get('aid',0)), "security": info.get('scy','auto')}]
+                  }]
+              }
+          elif proto == "trojan":
+              outbound_settings = {
+                  "servers": [{"address": address, "port": port, "password": u.username}]
+              }
 
           cfg = {
-            'log': {'loglevel': 'warning'},
-            'inbounds': [{
-              'port': 10808,
-              'listen': '127.0.0.1',
-              'protocol': 'socks',
-              'settings': {'auth': 'noauth', 'udp': True}
-            }],
-            'outbounds': [{
-              'protocol': 'vmess',
-              'settings': {
-                'vnext': [{
-                  'address': info['add'],
-                  'port': int(info['port']),
-                  'users': [{
-                    'id': info['id'],
-                    'alterId': int(info.get('aid', 0)),
-                    'security': info.get('scy', 'auto')
-                  }]
-                }]
-              },
-              'streamSettings': {
-                'network': info.get('net', 'ws'),
-                'security': info.get('tls', ''),
-                'tlsSettings': {
-                  'serverName': info.get('sni', info.get('host', '')),
-                  'allowInsecure': bool(int(info.get('insecure', 0)))
-                },
-                'wsSettings': {
-                  'path': info.get('path', '/'),
-                  'headers': {'Host': info.get('host', '')}
-                }
-              }
-            }]
+              "log": {"loglevel": "info"},
+              "inbounds": [{
+                  "port": 10808, "listen": "127.0.0.1",
+                  "protocol": "socks",
+                  "settings": {"auth": "noauth", "udp": True}
+              }],
+              "outbounds": [{
+                  "protocol": proto,
+                  "settings": outbound_settings,
+                  "streamSettings": stream
+              }]
           }
 
           with open('/tmp/xray_config.json', 'w') as f:
               json.dump(cfg, f, indent=2)
-          print('Xray config written.')
-          print(f'  -> {info[\"add\"]}:{info[\"port\"]} via ws+tls')
-          "
+          print("✅ Xray config 已写入")
+          PYEOF
 
-          # 启动 xray 后台
+          # 启动 xray
           nohup /usr/local/xray/xray run -c /tmp/xray_config.json > /tmp/xray.log 2>&1 &
           echo "Xray PID: $!"
-          sleep 3
+          sleep 4
 
-          # 验证 socks5 是否在监听
-          ss -tlnp | grep 10808 && echo "✅ Socks5 :10808 已就绪" || echo "❌ Socks5 未启动"
+          # 验证
+          echo "--- xray 日志 ---"
           cat /tmp/xray.log
+          echo "-----------------"
+          ss -tlnp | grep 10808 && echo "✅ Socks5 :10808 就绪" || (echo "❌ Socks5 未启动，退出" && exit 1)
 
       - name: Run keepalive
         run: python keepalive.py
