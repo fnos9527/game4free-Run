@@ -39,15 +39,14 @@ async def main():
     print("🎮  Gaming4Free Keepalive  (nodriver + vmess socks5)")
     print("=" * 55)
 
-    browser = await uc.start(
+browser = await uc.start(
+        sandbox=False,                           # ← 关键修复，root 环境必须
+        headless=True,
         browser_args=[
-            "--no-sandbox",                      # 修复 root 报错
-            "--disable-dev-shm-usage",
             "--disable-gpu",
             "--window-size=1280,720",
-            f"--proxy-server={SOCKS5}",          # 走 vmess 代理
+            f"--proxy-server={SOCKS5}",
         ],
-        headless=True,
     )
 
     try:
