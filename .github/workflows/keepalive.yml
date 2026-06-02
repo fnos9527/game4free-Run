@@ -1,9 +1,9 @@
 name: MC Server Keepalive
 
 on:
-  workflow_dispatch:       # 手动触发
+  workflow_dispatch:
   repository_dispatch:
-    types: [keepalive]    # cron-job.org POST 触发
+    types: [keepalive]
 
 jobs:
   keepalive:
@@ -11,45 +11,28 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install system deps
+      - name: Install Chrome
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            chromium-browser \
-            chromium-chromedriver \
-            xvfb \
-            libgbm1 \
-            libnss3 \
-            libatk-bridge2.0-0 \
-            libdrm2 \
-            libxkbcommon0 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxrandr2
+          wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y /tmp/chrome.deb
+          google-chrome --version
 
       - name: Install Python deps
-        run: |
-          pip install -q DrissionPage curl_cffi
+        run: pip install -q nodriver
 
       - name: Run keepalive
-        run: |
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1280x720x24 &
-          sleep 2
-          python keepalive.py
+        run: python keepalive.py
 
-      - name: Upload screenshot on failure
-        if: failure()
+      - name: Upload screenshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshot
+          name: screenshots-${{ github.run_id }}
           path: "*.png"
-          retention-days: 1
+          retention-days: 3
