@@ -11,7 +11,7 @@ Content-Type: application/json
 
 Body 填：
 ```
-{"ref":"main"}
+{"event_type":"keepalive"}
 ```
 
 流程图
