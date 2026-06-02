@@ -1,45 +1,29 @@
-name: Minecraft Server Auto Renew with Proxy
+name: Server Auto Renew
 
 on:
+  schedule:
+    # 每 1 个小时自动跑一次（因为每次加 90 分钟）
+    - cron: '0 */1 * * *'
   workflow_dispatch: # 支持手动触发
-  repository_dispatch: # 支持外部 API 触发 (cron-job.org)
-    types: [renew_trigger]
 
 jobs:
   renew:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 检出代码
+    - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: 设置 Node.js 环境
-      uses: actions/setup-node@v4
+    - name: Setup Node.js
+      uses: actions/actions-setup-node@v4
       with:
-        node-version: '20'
+        node-version: '18'
 
-    - name: 安装项目依赖
-      run: |
-        npm init -y
-        npm install playwright
+    - name: Install dependencies
+      run: npm install axios
 
-    - name: 安装 Playwright 浏览器
-      run: npx playwright install chromium --with-deps
-
-    - name: 执行续期脚本 (挂载虚拟显示器环境)
+    - name: Run Renew Script
       env:
-        # 你的 VLESS 节点链接，保存在 Actions Secrets 里
-        MY_VLESS_PROXY: ${{ secrets.MY_VLESS_PROXY }}
-      # 使用 xvfb-run 虚拟出一个高分辨率屏幕，强行让脚本在真浏览器环境下无感过人机
-      run: xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24" node renew.js
-
-    - name: 上传运行截图
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: execution-screenshots
-        path: |
-          *.png
-          xray.log
-          config.json
-        retention-days: 3
+        # 把 Cookie 存在安全变量里，以后过期了只需要在 GitHub 网页上改，不用改代码
+        MY_WEBSITE_COOKIE: ${{ secrets.MY_WEBSITE_COOKIE }}
+      run: node renew.js
