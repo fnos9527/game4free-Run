@@ -1,208 +1,164 @@
 #!/usr/bin/env python3
 """
-Gaming4Free myserver keepalive
-使用 DrissionPage (Chromium) 自动点击 +ADD 90 MIN 并过 CF Turnstile
+Gaming4Free keepalive — 使用 nodriver（最高 CF 绕过成功率）
 """
-
+import asyncio
 import re
-import time
-import sys
+import time as _time
 
-TARGET_URL = "https://g4f.gg/myserverbbr"
+TARGET = "https://g4f.gg/myserverbbr"
 
 def parse_seconds(t: str) -> int:
-    """把 HH:MM:SS 转成秒数"""
-    parts = re.findall(r'\d+', t)
-    if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    m = re.findall(r'\d+', t)
+    if len(m) >= 3:
+        return int(m[0]) * 3600 + int(m[1]) * 60 + int(m[2])
     return 0
 
-def get_time_text(page) -> str:
-    """获取倒计时文字"""
+async def get_timer(page) -> str:
+    """抓取倒计时"""
     try:
-        # 尝试多种选择器
-        for sel in [
-            '.time', '.timer', '[class*="timer"]',
-            '[class*="countdown"]', '[class*="remaining"]'
-        ]:
-            el = page.ele(sel, timeout=2)
-            if el:
-                txt = el.text.strip()
-                if re.search(r'\d{2}:\d{2}:\d{2}', txt):
-                    return txt
-        # fallback: 从整页搜索时间格式
-        html = page.html
-        match = re.search(r'(\d{2}:\d{2}:\d{2})', html)
-        return match.group(1) if match else "未知"
+        js = """
+        (() => {
+            // 找含 HH:MM:SS 格式的元素
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+                const t = el.innerText || '';
+                if (/\d{2}:\d{2}:\d{2}/.test(t) && el.children.length < 3) {
+                    return t.trim();
+                }
+            }
+            return '';
+        })()
+        """
+        result = await page.evaluate(js)
+        m = re.search(r'\d{2}:\d{2}:\d{2}', result or '')
+        return m.group(0) if m else "未知"
     except Exception as e:
-        print(f"  获取时间失败: {e}")
-        return "未知"
+        return f"获取失败({e})"
 
-def run():
-    from DrissionPage import ChromiumPage, ChromiumOptions
+async def main():
+    import nodriver as uc
 
-    print("=" * 50)
-    print("🎮 Gaming4Free Server Keepalive")
-    print("=" * 50)
+    print("=" * 55)
+    print("🎮  Gaming4Free Server Keepalive  (nodriver)")
+    print("=" * 55)
 
-    # --- 配置 Chromium ---
-    opts = ChromiumOptions()
-    opts.set_argument('--no-sandbox')
-    opts.set_argument('--disable-dev-shm-usage')
-    opts.set_argument('--disable-gpu')
-    opts.set_argument('--window-size=1280,720')
-    # 不加 headless，让 Xvfb 承担显示，这样 CF 检测不到 headless
-    # opts.headless()  ← 故意不开 headless
-
-    # 指定系统 chromium
-    import shutil
-    chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
-    if chromium_path:
-        opts.set_browser_path(chromium_path)
-        print(f"🌐 使用浏览器: {chromium_path}")
-
-    page = ChromiumPage(addr_or_opts=opts)
+    browser = await uc.start(
+        browser_args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--window-size=1280,720",
+        ],
+        headless=True,          # nodriver 的 headless 绕过能力比普通 headless 强
+    )
 
     try:
-        # --- Step 1: 打开页面 ---
-        print(f"\n📂 正在打开 {TARGET_URL} ...")
-        page.get(TARGET_URL)
-        time.sleep(3)
+        page = await browser.get(TARGET)
+        print(f"📂  已打开: {TARGET}")
+        await asyncio.sleep(4)
 
-        # 截图留底
-        page.get_screenshot(path='01_opened.png')
-        print("📸 截图: 01_opened.png")
+        await page.save_screenshot("01_opened.png")
+        time_before = await get_timer(page)
+        print(f"⏱️   点击前时间: {time_before}")
 
-        # 记录点击前时间
-        time_before = get_time_text(page)
-        print(f"⏱️  点击前剩余时间: {time_before}")
-
-        # --- Step 2: 点击 +ADD 90 MIN ---
-        print("\n🖱️  寻找 +ADD 90 MIN 按钮...")
-        
+        # ── 找并点击 +ADD 90 MIN ──────────────────────────────────
+        print("\n🖱️   寻找 +ADD 90 MIN 按钮...")
         btn = None
-        # 尝试多种方式找按钮
-        selectors = [
-            'x://button[contains(text(),"ADD 90 MIN")]',
-            'x://a[contains(text(),"ADD 90 MIN")]',
-            'x://*[contains(text(),"ADD 90 MIN")]',
-            '@text():ADD 90 MIN',
-        ]
-        for sel in selectors:
+        for sel in [
+            "button[class*='add']",
+            "//button[contains(.,'ADD 90 MIN')]",
+            "//a[contains(.,'ADD 90 MIN')]",
+            "//*[contains(.,'ADD 90 MIN')]",
+        ]:
             try:
-                btn = page.ele(sel, timeout=3)
-                if btn:
-                    print(f"  ✅ 找到按钮: {sel}")
+                el = await page.find(sel, timeout=4)
+                if el:
+                    btn = el
+                    print(f"  ✅ 找到: {sel}")
                     break
             except:
-                continue
+                pass
 
-        if not btn:
-            print("  ❌ 未找到按钮，保存截图退出")
-            page.get_screenshot(path='error_no_button.png')
-            sys.exit(1)
+        if btn is None:
+            # fallback: 用 JS 找
+            btn_found = await page.evaluate("""
+                (() => {
+                    const els = [...document.querySelectorAll('button,a')];
+                    const el = els.find(e => e.innerText.includes('ADD 90 MIN'));
+                    if (el) { el.click(); return true; }
+                    return false;
+                })()
+            """)
+            if btn_found:
+                print("  ✅ JS fallback 点击成功")
+            else:
+                print("  ❌ 找不到按钮，退出")
+                await page.save_screenshot("error_no_btn.png")
+                return
+        else:
+            await btn.click()
+            print("  ✅ 点击完成")
 
-        btn.click()
-        print("  ✅ 已点击！")
-        time.sleep(2)
+        await asyncio.sleep(3)
+        await page.save_screenshot("02_after_click.png")
 
-        page.get_screenshot(path='02_after_click.png')
-        print("📸 截图: 02_after_click.png")
-
-        # --- Step 3: 处理 CF Turnstile ---
-        print("\n🔍 检测 Cloudflare Turnstile 验证框...")
-        
-        # 最多等 30 秒让 CF 弹窗出现
-        cf_appeared = False
-        for i in range(15):
-            html = page.html
-            if 'challenges.cloudflare.com' in html or 'turnstile' in html.lower():
-                cf_appeared = True
-                print(f"  ✅ 检测到 CF 验证框 (第 {i+1} 次检测)")
+        # ── 检测 CF Turnstile ─────────────────────────────────────
+        print("\n🔍  检测 CF Turnstile...")
+        cf_detected = False
+        for _ in range(10):
+            html = await page.get_content()
+            if 'challenges.cloudflare.com' in html or 'cf-turnstile' in html:
+                cf_detected = True
+                print("  ⚠️  检测到 CF Turnstile 弹窗")
                 break
-            time.sleep(2)
+            await asyncio.sleep(2)
 
-        if cf_appeared:
-            print("  🤖 尝试点击 CF Turnstile checkbox...")
-            
-            # 等 iframe 加载
-            time.sleep(3)
-            
-            # 方法1：直接找 iframe 内的 checkbox
-            try:
-                iframe = page.get_frame('iframe[src*="challenges.cloudflare.com"]')
-                if iframe:
-                    cb = iframe.ele('tag:input', timeout=5)
-                    if cb:
-                        cb.click()
-                        print("  ✅ 点击了 iframe 内 checkbox")
-            except Exception as e:
-                print(f"  方法1失败: {e}")
-
-            # 方法2：用 JS 触发
-            try:
-                page.run_js("""
-                    var frames = document.querySelectorAll('iframe');
-                    frames.forEach(f => {
-                        try {
-                            var cb = f.contentDocument.querySelector('input[type=checkbox]');
-                            if(cb) cb.click();
-                        } catch(e) {}
-                    });
-                """)
-                print("  ✅ JS 注入完成")
-            except Exception as e:
-                print(f"  方法2失败: {e}")
-
-            # 等待验证完成（最多 60 秒）
-            print("  ⏳ 等待验证通过（最多 60 秒）...")
-            for i in range(30):
-                time.sleep(2)
-                html = page.html
-                # 检查弹窗是否消失
-                if 'challenges.cloudflare.com' not in html:
-                    print(f"  ✅ CF 验证已通过！（等待了 {(i+1)*2} 秒）")
-                    cf_appeared = False
+        if cf_detected:
+            # nodriver 内置对 CF 的处理，等待它自动解决
+            print("  ⏳ 等待 nodriver 自动处理 CF（最多90秒）...")
+            solved = False
+            for i in range(45):
+                await asyncio.sleep(2)
+                html = await page.get_content()
+                # CF 消失说明通过了
+                if 'challenges.cloudflare.com' not in html and 'cf-turnstile' not in html:
+                    print(f"  ✅ CF 已通过！（耗时约 {(i+1)*2}s）")
+                    solved = True
                     break
                 if i % 5 == 4:
-                    print(f"  ... 还在等 ({(i+1)*2}s)")
+                    print(f"  ... 等待中 {(i+1)*2}s")
+                    await page.save_screenshot(f"cf_wait_{(i+1)*2}s.png")
 
-            page.get_screenshot(path='03_after_cf.png')
-            print("📸 截图: 03_after_cf.png")
-
-            if cf_appeared:
-                print("  ⚠️  CF 验证未通过，可能需要人工介入")
-
+            if not solved:
+                print("  ❌ CF 验证超时未通过")
+                await page.save_screenshot("03_cf_failed.png")
         else:
-            print("  ✅ 未检测到 CF 验证框，可能已自动通过")
+            print("  ✅ 未检测到 CF 弹窗，继续...")
 
-        # --- Step 4: 检查结果 ---
-        time.sleep(3)
-        time_after = get_time_text(page)
-        print(f"\n⏱️  操作后剩余时间: {time_after}")
+        # ── 检查结果 ──────────────────────────────────────────────
+        await asyncio.sleep(3)
+        await page.save_screenshot("04_final.png")
+        time_after = await get_timer(page)
 
         before_s = parse_seconds(time_before)
         after_s  = parse_seconds(time_after)
-        diff = after_s - before_s
+        diff     = after_s - before_s
 
-        print("\n" + "=" * 50)
-        if diff >= 5000:   # 90分钟 = 5400秒，留点误差
-            print(f"🎉 SUCCESS！增加了约 {diff // 60} 分钟")
-            print(f"   {time_before} → {time_after}")
-        elif diff > 0:
-            print(f"⚠️  时间有所增加但不足90分钟: +{diff//60}分{diff%60}秒")
-            print(f"   {time_before} → {time_after}")
+        print("\n" + "=" * 55)
+        print(f"⏱️   操作前: {time_before}")
+        print(f"⏱️   操作后: {time_after}")
+        if diff >= 5000:
+            print(f"🎉  SUCCESS！增加了约 {diff // 60} 分钟")
+        elif diff > 60:
+            print(f"⚠️   时间增加但不足90分钟: +{diff//60}m{diff%60}s")
         else:
-            print(f"❌ 时间未增加（差值: {diff}秒）")
-            print(f"   {time_before} → {time_after}")
-            print("   可能原因: CF验证未通过 / 已达每日上限")
-        print("=" * 50)
-
-        page.get_screenshot(path='04_final.png')
+            print(f"❌  时间未明显增加（差值 {diff}s），CF可能未通过")
+        print("=" * 55)
 
     finally:
-        page.quit()
-        print("\n✅ 浏览器已关闭")
+        await browser.stop()
+        print("✅  浏览器已关闭")
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(main())
