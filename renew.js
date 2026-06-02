@@ -87,7 +87,7 @@ async function extractServerTime(page) {
     const isProxyActive = startXrayProxy(vlessLink);
 
     const launchOptions = {
-        headless: false, // 配合 xvfb 运行真实浏览器
+        headless: false, 
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
@@ -129,54 +129,56 @@ async function extractServerTime(page) {
         if (await addBtn.count() === 0) {
             addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         }
-        
-        // 抓取按钮坐标，为鼠标滑动轨迹做准备
-        const btnBounds = await addBtn.boundingBox();
         await addBtn.click();
         console.log('已成功触发点击动作。');
         
-        console.log('等待弹窗和 Cloudflare 验证组件加载（增加到12秒缓冲）...');
-        await page.waitForTimeout(12000); 
+        console.log('等待弹窗和 Cloudflare 验证组件加载...');
+        await page.waitForTimeout(10000); 
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare 验证（坐标盲点对抗模式）...');
+        console.log('第三步：处理 Cloudflare 验证（原生指引与动态坐标融合模式）...');
         
-        const cfSelector = 'iframe[src*="cloudflare"], iframe[src*="challenges"], iframe[title*="Cloudflare"]';
-        const cfElement = await page.$(cfSelector);
+        // 针对原生渲染和嵌入式 Turnstile 组件的混合选择器
+        const captchaSelector = '.cf-turnstile, [class*="cf-turnstile"], #cf-turnstile, [id*="cf-"]';
         
-        if (cfElement) {
-            console.log('成功检测到验证组件 DOM，尝试精确制导点击...');
-            const box = await cfElement.boundingBox();
+        // 先看看能不能直接抓到这个原生组件元素
+        const captchaElement = await page.$(captchaSelector);
+        
+        if (captchaElement) {
+            console.log('🎯 成功在 DOM 树中捕捉到原生的 Turnstile 验证组件。');
+            const box = await captchaElement.boundingBox();
             if (box) {
-                // 模拟真人平滑移动鼠标到复选框区
-                await page.mouse.move(box.x + box.width / 4, box.y + box.height / 2, { steps: 10 });
-                await page.mouse.click(box.x + box.width / 4, box.y + box.height / 2, { delay: 150 });
+                // 根据视觉原理，整个验证横条中，勾选方块位于偏左侧大约 30 到 40 像素的位置
+                // 咱们通过盒模型算出相对精准的左侧中心坐标
+                const targetX = box.x + 35; 
+                const targetY = box.y + (box.height / 2);
+                
+                console.log(`计算得出验证方块精准坐标: [X:${targetX.toFixed(1)}, Y:${targetY.toFixed(1)}]`);
+                
+                // 模拟真人平滑滑过去，并开火点击
+                await page.mouse.move(targetX, targetY, { steps: 12 });
+                await page.waitForTimeout(200);
+                await page.mouse.click(targetX, targetY, { delay: 150 });
+                console.log('精准打击指令已发出。');
             }
         } else {
-            console.log('⚠️ 未在 DOM 树中捕捉到标准 iframe，启动坐标盲补轰炸模式...');
-            // 根据 1366x768 屏幕下 Bootstrap 居中弹窗的视觉常理：
-            // 弹窗中心通常在 x: 683, y: 384 附近，转圈加载的位置大约在 x: 520~560, y: 320~380 之间
-            // 模拟鼠标滑行过去
-            if (btnBounds) {
-                await page.mouse.move(btnBounds.x, btnBounds.y);
-            }
-            
-            // 尝试在可能渲染验证码复选框的几个中心点区域连续盲点
-            const targets = [
-                {x: 550, y: 345},
-                {x: 535, y: 345},
-                {x: 565, y: 345}
-            ];
-            
-            for (const target of targets) {
-                console.log(`模拟真人轨迹划向绝对坐标 [X:${target.x}, Y:${target.y}] 并触发点击...`);
-                await page.mouse.move(target.x, target.y, { steps: 8 });
-                await page.waitForTimeout(200);
-                await page.mouse.click(target.x, target.y, { delay: 100 });
+            console.log('⚠️ 未能找到原生组件类名，启动后备弹窗视觉相对坐标轰炸...');
+            // 既然在模态框里，我们获取当前弹窗里那个显示了“Loading...”或者验证区域的大区块位置
+            const modalBody = await page.$('.modal-body, [class*="modal-content"]');
+            if (modalBody) {
+                const mBox = await modalBody.boundingBox();
+                if (mBox) {
+                    // Turnstile 通常位于 modal 内部靠下的水平居中偏左侧
+                    const targetX = mBox.x + (mBox.width / 2) - 110; 
+                    const targetY = mBox.y + (mBox.height / 2) + 15;
+                    console.log(`通过模态框算出的相对坐标: [X:${targetX}, Y:${targetY}]`);
+                    await page.mouse.move(targetX, targetY, { steps: 10 });
+                    await page.mouse.click(targetX, targetY, { delay: 120 });
+                }
             }
         }
 
-        console.log('点击指令完全送达，挂起 15 秒等待后端时间入库...');
+        console.log('等待 15 秒让 Cloudflare 校验完成并写入后端...');
         await page.waitForTimeout(15000);
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
