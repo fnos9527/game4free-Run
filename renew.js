@@ -4,7 +4,7 @@ const fs = require('fs');
 function installDeps() {
     console.log('正在安装依赖包...');
     try {
-        execSync('npm install --save camoufox@latest', { stdio: 'inherit' });
+        execSync('npm install --save camoufox@latest playwright', { stdio: 'inherit' });
         execSync('npx camoufox fetch', { stdio: 'inherit' });
         execSync('chmod -R 755 /home/runner/.cache/camoufox 2>/dev/null || true', { stdio: 'ignore', shell: true });
         console.log('✅ 依赖安装完成。');
@@ -14,29 +14,13 @@ function installDeps() {
     }
 }
 
-function startXvfb() {
-    try {
-        execSync('which Xvfb || (apt-get update -qq && apt-get install -y -qq xvfb)', { stdio: 'inherit', shell: true });
-        try { execSync('pkill Xvfb', { stdio: 'ignore' }); } catch (e) {}
-        execSync('sleep 1');
-        exec('Xvfb :99 -screen 0 1366x768x24 &', { stdio: 'ignore', shell: true }).unref();
-        execSync('sleep 2');
-        process.env.DISPLAY = ':99';
-        console.log('✅ Xvfb 已启动（DISPLAY=:99）');
-        return true;
-    } catch (e) {
-        console.log('⚠️ Xvfb 失败:', e.message);
-        return false;
-    }
-}
-
 function startXrayProxy(vlessLink) {
     if (!vlessLink) { console.log('⚠️ 未检测到代理变量。'); return false; }
     console.log('正在下载 Xray-core...');
     try {
         execSync('curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip', { stdio: 'ignore' });
         execSync('unzip -o xray.zip xray && chmod +x xray', { stdio: 'ignore' });
-    } catch (err) { console.error('❌ Xray 下载失败:', err.message); return false; }
+    } catch (err) { console.error('❌ Xray 失败:', err.message); return false; }
     try {
         const url = new URL(vlessLink);
         const uuid = url.username;
@@ -84,41 +68,50 @@ async function handleTurnstile(page) {
 
 (async () => {
     installDeps();
-    const xvfbOk = startXvfb();
     const vlessLink = process.env.MY_VLESS_PROXY;
     const isProxyActive = startXrayProxy(vlessLink);
 
     let browser, page;
 
     try {
-        console.log('正在用 Camoufox (NewBrowser) 启动...');
+        console.log('正在用 Camoufox 启动 Firefox...');
         const { NewBrowser } = require('camoufox');
+        // playwright 必须作为第一个参数传入
+        const playwright = require('playwright');
 
-        const opts = {
-            headless: !xvfbOk,
-            os: 'windows',
-        };
-        if (isProxyActive) opts.proxy = 'socks5://127.0.0.1:10808';
+        const launchOpts = {};
+        if (isProxyActive) launchOpts.proxy = 'socks5://127.0.0.1:10808';
+        launchOpts.os = 'windows';
+        launchOpts.humanize = true;
 
-        browser = await NewBrowser(opts);
+        // headless: "virtual" = camoufox 自动管理 Xvfb，无需手动启动
+        browser = await NewBrowser(playwright, 'virtual', launchOpts);
         page = await browser.newPage();
         console.log('✅ Camoufox 启动成功！');
 
     } catch (e) {
         console.log('⚠️ Camoufox 失败:', e.message);
-        console.log('降级使用 playwright-extra Firefox...');
+        console.log('降级使用 playwright Firefox...');
 
         try {
-            const { firefox } = require('playwright-extra');
-            const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-            // stealth 的 user-agent-override 插件在 Firefox 下有 bug，只加其他插件
-            const stealth = StealthPlugin();
-            stealth.enabledEvasions.delete('user-agent-override');
-            firefox.use(stealth);
-
             execSync('npx playwright install firefox', { stdio: 'inherit' });
+            // 启动 Xvfb 作为降级方案
+            try {
+                execSync('which Xvfb || apt-get install -y -qq xvfb', { stdio: 'ignore', shell: true });
+                try { execSync('pkill Xvfb', { stdio: 'ignore' }); } catch(e2){}
+                exec('Xvfb :99 -screen 0 1366x768x24 &', { stdio: 'ignore', shell: true }).unref();
+                execSync('sleep 2');
+                process.env.DISPLAY = ':99';
+            } catch(e2) {}
 
-            const launchOpts = { headless: !xvfbOk };
+            const { firefox } = require('playwright');
+            const launchOpts = {
+                headless: false,
+                firefoxUserPrefs: {
+                    // 禁用 WebRTC 泄漏
+                    'media.peerconnection.enabled': false,
+                },
+            };
             if (isProxyActive) launchOpts.proxy = { server: 'socks5://127.0.0.1:10808' };
 
             browser = await firefox.launch(launchOpts);
@@ -129,24 +122,15 @@ async function handleTurnstile(page) {
                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
             });
             page = await ctx.newPage();
-            console.log('✅ playwright-extra Firefox 启动成功');
+            console.log('✅ playwright Firefox 启动成功');
         } catch (e2) {
-            console.log('⚠️ Firefox 失败:', e2.message, '降级 Chromium...');
-            const { chromium } = require('playwright-extra');
-            const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-            chromium.use(StealthPlugin());
-            execSync('npx playwright install chromium', { stdio: 'inherit' });
-            const launchOpts = { headless: !xvfbOk, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'] };
-            if (isProxyActive) launchOpts.proxy = { server: 'socks5://127.0.0.1:10808' };
-            browser = await chromium.launch(launchOpts);
-            const ctx = await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36', viewport: { width: 1366, height: 768 }, locale: 'en-US' });
-            page = await ctx.newPage();
+            throw new Error('所有浏览器方案均失败: ' + e2.message);
         }
     }
 
-    // 只监听 g4f.gg 自身的 POST（排除广告域名）
+    // 只监听 g4f.gg 自身的 POST
+    const adDomains = ['3lift','google','doubleclick','amazon','intergient','rapidedge','id5-sync','crwdcntrl','fastclick','hadronid','prebid'];
     let renewApiCaptured = null;
-    const adDomains = ['3lift', 'google', 'doubleclick', 'amazon-adsystem', 'intergient', 'rapidedge', 'id5-sync', 'crwdcntrl', 'fastclick', 'hadronid'];
     page.on('request', (req) => {
         const url = req.url();
         if (req.method() === 'POST' && url.includes('g4f.gg') && !adDomains.some(d => url.includes(d))) {
@@ -166,9 +150,7 @@ async function handleTurnstile(page) {
 
     try {
         console.log('第一步：打开目标网页...');
-        // 用 domcontentloaded 而非 networkidle，避免广告脚本导致超时
         await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'domcontentloaded', timeout: 30000 });
-        // 等页面主体内容渲染完成（等到计时器出现）
         await page.waitForSelector('text=/\\d{2}:\\d{2}:\\d{2}/', { timeout: 15000 }).catch(() => {});
         await page.waitForTimeout(2000);
 
