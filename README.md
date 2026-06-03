@@ -50,7 +50,7 @@ cron-job.org每小时(定时触发) 或 手动触发
 ```
 
 唯一变量Secret名称
-VLESS_NODE
+MY_VLESS_PROXY
 
 示例值
 vless://uuid@your-server.com:443?encryption=none&security=tls&type=ws&path=%2Fpath&host=your-server.com#MyNode
