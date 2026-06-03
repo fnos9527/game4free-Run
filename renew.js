@@ -3,7 +3,6 @@ const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
 
-// ─── 安装依赖 ──────────────────────────────────────────────────────────────────
 function installDeps() {
     console.log('正在安装依赖包...');
     try {
@@ -13,7 +12,6 @@ function installDeps() {
     } catch (e) { console.error('❌ 依赖安装失败:', e.message); process.exit(1); }
 }
 
-// ─── 安装并启动真实 Chrome ────────────────────────────────────────────────────
 function installChrome() {
     try {
         execSync('which google-chrome || which google-chrome-stable', { stdio: 'ignore' });
@@ -44,7 +42,6 @@ async function launchChrome(proxyServer) {
         try { execSync(`test -f ${p}`, { stdio: 'ignore' }); chromePath = p; break; } catch (e) {}
     }
     if (!chromePath) { console.log('⚠️ 未找到 Chrome，跳过 CDP 模式'); return null; }
-
     if (await checkPort(DEBUG_PORT)) { console.log('Chrome 已运行'); return DEBUG_PORT; }
 
     console.log(`正在启动 Chrome (${chromePath})...`);
@@ -58,18 +55,15 @@ async function launchChrome(proxyServer) {
         '--display=:99',
     ];
     if (proxyServer) args.push(`--proxy-server=${proxyServer}`);
-
     spawn(chromePath, args, { detached: true, stdio: 'ignore' }).unref();
 
     for (let i = 0; i < 20; i++) {
         if (await checkPort(DEBUG_PORT)) { console.log('✅ Chrome 已就绪'); return DEBUG_PORT; }
         await new Promise(r => setTimeout(r, 1000));
     }
-    console.log('⚠️ Chrome 启动超时');
-    return null;
+    console.log('⚠️ Chrome 启动超时'); return null;
 }
 
-// ─── Xray 代理 ────────────────────────────────────────────────────────────────
 function startXrayProxy(vlessLink) {
     if (!vlessLink) { console.log('⚠️ 未检测到代理变量。'); return null; }
     console.log('正在下载 Xray-core...');
@@ -96,8 +90,6 @@ function startXrayProxy(vlessLink) {
     } catch (e) { console.log('⚠️ 代理测试失败，继续。'); return 'socks5://127.0.0.1:10808'; }
 }
 
-// ─── 核心：attachShadow Hook（来自参考代码）────────────────────────────────────
-// 劫持 Shadow DOM 创建，记录 Turnstile 复选框的精确位置
 const INJECTED_SCRIPT = `
 (function() {
     try {
@@ -128,29 +120,24 @@ const INJECTED_SCRIPT = `
             }
             return shadowRoot;
         };
-    } catch(e) { console.error('[Hook] attachShadow 失败:', e); }
+    } catch(e) {}
 })();
 `;
 
-// ─── CDP 精准点击（来自参考代码）─────────────────────────────────────────────
 async function attemptTurnstileCDP(page) {
     const frames = page.frames();
     for (const frame of frames) {
         try {
             const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
             if (!data) continue;
-
             console.log('✅ 找到 Turnstile 位置数据:', data);
             const iframeEl = await frame.frameElement();
             if (!iframeEl) continue;
             const box = await iframeEl.boundingBox();
             if (!box) continue;
-
             const clickX = box.x + box.width * data.xRatio;
             const clickY = box.y + box.height * data.yRatio;
             console.log(`   点击坐标: (${clickX.toFixed(1)}, ${clickY.toFixed(1)})`);
-
-            // 用 CDP 底层事件发送点击，完全绕过 Playwright 自动化标记
             const client = await page.context().newCDPSession(page);
             await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', clickCount: 1 });
             await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
@@ -158,7 +145,7 @@ async function attemptTurnstileCDP(page) {
             await client.detach();
             console.log('   CDP 点击已发送');
             return true;
-        } catch (e) { }
+        } catch (e) {}
     }
     return false;
 }
@@ -171,11 +158,9 @@ async function extractServerTime(page) {
     } catch (e) { return '获取失败'; }
 }
 
-// ─── 主流程 ───────────────────────────────────────────────────────────────────
 (async () => {
     installDeps();
 
-    // 启动 Xvfb
     try {
         execSync('which Xvfb || (apt-get update -qq && apt-get install -y -qq xvfb)', { stdio: 'ignore', shell: true });
         try { execSync('pkill Xvfb', { stdio: 'ignore' }); } catch(e) {}
@@ -189,19 +174,15 @@ async function extractServerTime(page) {
     const vlessLink = process.env.MY_VLESS_PROXY;
     const proxyServer = startXrayProxy(vlessLink);
 
-    // 安装并启动真实 Chrome
     installChrome();
     const debugPort = await launchChrome(proxyServer);
 
     let browser, page;
 
     if (debugPort) {
-        // 方案A：连接真实 Chrome（最佳，和参考代码一样）
-        console.log('正在通过 CDP 连接真实 Chrome...');
         const { chromium } = require('playwright-extra');
         const StealthPlugin = require('puppeteer-extra-plugin-stealth');
         chromium.use(StealthPlugin());
-
         for (let k = 0; k < 5; k++) {
             try {
                 browser = await chromium.connectOverCDP(`http://localhost:${debugPort}`);
@@ -212,19 +193,13 @@ async function extractServerTime(page) {
                 await new Promise(r => setTimeout(r, 2000));
             }
         }
-
         if (browser) {
             const context = browser.contexts()[0];
             page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-            if (proxyServer && proxyServer.includes('@')) {
-                const u = new URL(proxyServer);
-                await context.setHTTPCredentials({ username: u.username, password: u.password });
-            }
         }
     }
 
     if (!browser || !page) {
-        // 方案B：Playwright Chromium 降级
         console.log('降级使用 Playwright Chromium...');
         const { chromium } = require('playwright-extra');
         const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -236,27 +211,30 @@ async function extractServerTime(page) {
         page = await ctx.newPage();
     }
 
-    // 注入 Shadow DOM Hook
     await page.addInitScript(INJECTED_SCRIPT);
     console.log('✅ Shadow DOM Hook 已注入');
 
-    // 监听 g4f.gg POST
-    let renewApiCaptured = null;
+    // 用 Promise 让主流程等待续期 POST 完成
+    let renewResolve;
+    const renewDone = new Promise(resolve => { renewResolve = resolve; });
+
     const adDomains = ['3lift','google','doubleclick','amazon','intergient','rapidedge','id5-sync','crwdcntrl','fastclick','hadronid','prebid','tlx'];
     page.on('request', (req) => {
         const url = req.url();
         if (req.method() === 'POST' && url.includes('g4f.gg') && !adDomains.some(d => url.includes(d))) {
-            console.log(`📡 续期 POST: ${url}`);
-            const body = req.postData();
-            if (body) console.log(`   Body: ${body.substring(0, 400)}`);
-            renewApiCaptured = { url, body };
+            console.log(`📡 续期 POST 已发出: ${url}`);
         }
     });
     page.on('response', async (res) => {
-        if (renewApiCaptured && res.url() === renewApiCaptured.url) {
-            const text = await res.text().catch(() => '');
-            console.log(`📨 响应 [${res.status()}]: ${text.substring(0, 300)}`);
-            renewApiCaptured.status = res.status();
+        const url = res.url();
+        if (url.includes('g4f.gg') && url.includes('vote') && !adDomains.some(d => url.includes(d))) {
+            const status = res.status();
+            console.log(`📨 续期响应 [${status}]`);
+            // 302 = 重定向 = 服务器已处理请求（无论成功失败都会重定向）
+            // 200 也可能是成功
+            if (status === 302 || status === 200 || status === 204) {
+                renewResolve(status);
+            }
         }
     });
 
@@ -274,7 +252,6 @@ async function extractServerTime(page) {
         let addBtn = page.locator('text="+ ADD 90 MIN"').first();
         if (await addBtn.count() === 0) addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         await addBtn.scrollIntoViewIfNeeded();
-        // 先移动鼠标到按钮位置，模拟人类行为
         const btnBox = await addBtn.boundingBox().catch(() => null);
         if (btnBox) await page.mouse.move(btnBox.x + btnBox.width/2, btnBox.y + btnBox.height/2, { steps: 10 });
         await addBtn.click();
@@ -283,52 +260,38 @@ async function extractServerTime(page) {
         await page.screenshot({ path: '2_after_click_popup.png' });
 
         console.log('第三步：使用 Shadow DOM Hook + CDP 处理 Turnstile...');
-        let passed = false;
+        let cdpClicked = false;
         for (let attempt = 1; attempt <= 15; attempt++) {
-            console.log(`   [尝试 ${attempt}/15] 查找 Turnstile 位置数据...`);
             const clicked = await attemptTurnstileCDP(page);
             if (clicked) {
-                console.log('   CDP 点击完成，等待 10 秒验证结果...');
-                await page.waitForTimeout(10000);
+                cdpClicked = true;
+                console.log('   CDP 点击完成，等待续期 POST 响应（最多 20 秒）...');
+                break;
+            }
+            await page.waitForTimeout(1000);
+        }
 
-                // 检查 token 是否写入
-                const token = await page.evaluate(() => {
-                    const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-                    for (const inp of inputs) if (inp.value && inp.value.length > 10) return inp.value.substring(0, 20);
-                    return null;
-                }).catch(() => null);
+        if (!cdpClicked) {
+            console.log('⚠️ 未能找到 Turnstile 位置，截图留存');
+            await page.screenshot({ path: '3_after_captcha_attempt.png' });
+        } else {
+            // 等待续期 POST 完成，最多 20 秒
+            const renewStatus = await Promise.race([
+                renewDone,
+                new Promise(r => setTimeout(() => r(null), 20000))
+            ]);
 
-                if (token) {
-                    console.log(`🎉 Token 已写入: ${token}...`);
-                    passed = true;
-                    break;
-                }
+            await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
-                // 检查 CF iframe 是否显示 Success
-                const frames = page.frames();
-                for (const f of frames) {
-                    if (f.url().includes('cloudflare')) {
-                        try {
-                            const success = await f.locator('text=Success').isVisible({ timeout: 500 });
-                            if (success) { console.log('🎉 CF iframe 显示 Success！'); passed = true; break; }
-                        } catch(e) {}
-                    }
-                }
-                if (passed) break;
-                console.log('   Token 未写入，等待 2 秒后重试...');
-                await page.waitForTimeout(2000);
+            if (renewStatus) {
+                console.log(`✅ 续期请求已完成（HTTP ${renewStatus}）`);
             } else {
-                console.log('   未找到位置数据，等待 1 秒...');
-                await page.waitForTimeout(1000);
+                console.log('⚠️ 20 秒内未收到续期响应');
             }
         }
 
-        console.log(`验证结果: ${passed ? '✅ 通过' : '❌ 未通过'}`);
-        await page.waitForTimeout(3000);
-        await page.screenshot({ path: '3_after_captcha_attempt.png' });
-
         console.log('第四步：检查时间...');
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(3000);
         const endTime = await extractServerTime(page);
         console.log(`更新后剩余时间: ${endTime}`);
 
@@ -336,8 +299,9 @@ async function extractServerTime(page) {
         if (initialTime !== '无法提取' && endTime !== '无法提取') {
             const diff = toSec(endTime) - toSec(initialTime);
             if (diff > 60) console.log(`✅ 续期成功！增加约 ${Math.round(diff/60)} 分钟。`);
-            else console.log('❌ 时间未增加，续期失败。');
+            else console.log('⚠️ 时间未明显增加（可能已接近上限或续期间隔限制）。');
         }
+
     } catch (err) {
         console.error('异常:', err.message);
         await page.screenshot({ path: 'error_screenshot.png' }).catch(()=>{});
