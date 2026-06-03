@@ -14,6 +14,26 @@ function installDeps() {
     }
 }
 
+// 安装并启动 Xvfb 虚拟显示器（让浏览器以有头模式运行，绕过 CF 无头检测）
+function startXvfb() {
+    console.log('正在安装 Xvfb 虚拟显示器...');
+    try {
+        execSync('which Xvfb || (apt-get update -qq && apt-get install -y -qq xvfb)', { stdio: 'inherit', shell: true });
+        // 关掉可能残留的旧实例
+        try { execSync('pkill Xvfb', { stdio: 'ignore' }); } catch (e) {}
+        execSync('sleep 1');
+        // 启动虚拟显示器 :99，分辨率 1366x768，色深 24
+        exec('Xvfb :99 -screen 0 1366x768x24 &', { stdio: 'ignore', shell: true }).unref();
+        execSync('sleep 2');
+        process.env.DISPLAY = ':99';
+        console.log('✅ Xvfb 虚拟显示器已启动（DISPLAY=:99）');
+        return true;
+    } catch (e) {
+        console.log('⚠️ Xvfb 启动失败，将继续用无头模式:', e.message);
+        return false;
+    }
+}
+
 function startXrayProxy(vlessLink) {
     if (!vlessLink) {
         console.log('⚠️ 未检测到 MY_VLESS_PROXY 变量，将不使用代理运行。');
@@ -76,83 +96,55 @@ async function extractServerTime(page) {
     }
 }
 
-// ─── 处理 Turnstile：等待 captcha-widget 内的 iframe 动态注入，然后点击 ─────────
+// Turnstile Managed Mode：不需要点击，只需等待 token 自动写入
+// 若 token 迟迟不来（IP 被拒），则尝试 reset 后再等一次
 async function handleTurnstile(page) {
-    console.log('等待 #captcha-widget 容器出现...');
+    console.log('等待 Turnstile Managed Mode 自动完成验证（token 写入 input）...');
 
-    // 等待 captcha 容器出现（模态框打开时已存在，但 iframe 是动态注入的）
-    await page.waitForSelector('#captcha-widget', { timeout: 15000 }).catch(() => null);
-
-    // 等待 Turnstile 在 #captcha-widget 内动态注入 iframe
-    console.log('等待 Turnstile 在 #captcha-widget 内注入 iframe（最多 20 秒）...');
-    const iframeHandle = await page.waitForSelector(
-        '#captcha-widget iframe',
-        { timeout: 20000 }
-    ).catch(() => null);
-
-    if (!iframeHandle) {
-        console.log('⚠️ #captcha-widget 内未注入 iframe，尝试直接点击容器...');
-        const box = await page.locator('#captcha-widget').boundingBox().catch(() => null);
-        if (box) {
-            await page.mouse.click(box.x + box.width * 0.12, box.y + box.height / 2, { delay: 120 });
-            console.log('已点击容器，等待 30 秒...');
-            await page.waitForTimeout(30000);
+    const waitForToken = (timeout) => page.waitForFunction(() => {
+        const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
+        for (const inp of inputs) {
+            if (inp.value && inp.value.length > 10) return true;
         }
         return false;
-    }
+    }, { timeout });
 
-    console.log('✅ 找到 #captcha-widget 内的 iframe，等待完全渲染（3 秒）...');
-    await page.waitForTimeout(3000);
-
-    // 切入 iframe
-    const frame = await iframeHandle.contentFrame().catch(() => null);
-
-    if (frame) {
-        console.log('切入 iframe frame context，寻找 checkbox...');
-        const checkbox = await frame.waitForSelector('input[type="checkbox"]', { timeout: 6000 }).catch(() => null);
-        if (checkbox) {
-            console.log('找到 checkbox，点击...');
-            await checkbox.click({ delay: 100 });
-        } else {
-            console.log('未找到 checkbox，点击 body 左侧...');
-            const bodyBox = await frame.locator('body').boundingBox().catch(() => null);
-            if (bodyBox) {
-                await frame.locator('body').click({
-                    position: { x: Math.min(40, bodyBox.width * 0.12), y: bodyBox.height / 2 },
-                    delay: 100
-                });
-            }
-        }
-    } else {
-        // frame context 不可用，用外部坐标点击 iframe 左侧
-        console.log('无法切入 frame，用外部坐标点击 iframe 左侧...');
-        const box = await iframeHandle.boundingBox().catch(() => null);
-        if (box) {
-            await page.mouse.click(box.x + box.width * 0.12, box.y + box.height / 2, { delay: 120 });
-        }
-    }
-
-    // ── 关键改变：等待隐藏 input 被填入 token，而不是等待 iframe 消失 ──────────
-    console.log('等待 Turnstile token 写入 input（最多 40 秒）...');
+    // 第一次等待：45 秒
     try {
-        await page.waitForFunction(() => {
-            // vote-turnstile-token 或任意 cf-turnstile-response input 有值即视为通过
-            const inputs = document.querySelectorAll('input[name="cf-turnstile-response"]');
-            for (const inp of inputs) {
-                if (inp.value && inp.value.length > 10) return true;
-            }
-            return false;
-        }, { timeout: 40000 });
-        console.log('🎉 Turnstile token 已写入，验证通过！');
+        await waitForToken(45000);
+        console.log('🎉 Turnstile token 已自动写入，验证通过！');
         return true;
     } catch (e) {
-        console.log('⚠️ 40 秒内未检测到 token 写入，验证可能未通过。');
+        console.log('⚠️ 45 秒内未获得 token，尝试调用 turnstile.reset() 重置后再等...');
+    }
+
+    // 尝试 reset，让 Turnstile 重新评估
+    await page.evaluate(() => {
+        try {
+            if (window.turnstile && window._captchaWidgetId !== undefined) {
+                window.turnstile.reset(window._captchaWidgetId);
+            }
+        } catch (e) {}
+    }).catch(() => {});
+
+    await page.waitForTimeout(3000);
+
+    // 第二次等待：45 秒
+    try {
+        await waitForToken(45000);
+        console.log('🎉 reset 后 Turnstile token 写入成功！');
+        return true;
+    } catch (e) {
+        console.log('❌ 两次等待均超时，IP 可能被 CF 拒绝。');
         return false;
     }
 }
 
 (async () => {
     installDeps();
+
+    // 启动 Xvfb，让浏览器以有头模式运行
+    const xvfbOk = startXvfb();
 
     const { chromium } = require('playwright-extra');
     const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -162,15 +154,25 @@ async function handleTurnstile(page) {
     const isProxyActive = startXrayProxy(vlessLink);
 
     const launchOptions = {
-        headless: true,
+        // Xvfb 成功时用有头模式，否则降级无头
+        headless: !xvfbOk,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--blink-settings=imagesEnabled=true',
             '--disable-blink-features=AutomationControlled',
             '--disable-features=IsolateOrigins,site-per-process',
+            '--blink-settings=imagesEnabled=true',
         ]
     };
+
+    if (xvfbOk) {
+        // 有头模式下明确指定显示器
+        launchOptions.args.push('--display=:99');
+        console.log('✅ 浏览器将以有头模式运行（Xvfb :99）');
+    } else {
+        console.log('⚠️ 浏览器将以无头模式运行');
+    }
+
     if (isProxyActive) {
         console.log('配置 Playwright 浏览器走本地代理: socks5://127.0.0.1:10808');
         launchOptions.proxy = { server: 'socks5://127.0.0.1:10808' };
@@ -200,24 +202,23 @@ async function handleTurnstile(page) {
         }
     });
 
-    // 监听续期 API 请求（验证通过后会自动触发 form submit）
+    // 只监听 g4f.gg 自身的 POST（排除 GA/广告）
     let renewApiCaptured = null;
     context.on('request', (req) => {
         const url = req.url();
-        const method = req.method();
-        // 排除已知的广告/分析请求，只关注 g4f.gg 或 gaming4free 的 POST
-        if (method === 'POST' && (url.includes('g4f.gg') || url.includes('gaming4free'))) {
-            console.log(`📡 捕获到目标 POST: ${url}`);
-            console.log(`   Body: ${req.postData()?.substring(0, 300) || '(empty)'}`);
-            renewApiCaptured = { url, body: req.postData() };
+        if (req.method() === 'POST' && url.includes('g4f.gg') && !url.includes('google')) {
+            console.log(`📡 捕获到续期 POST: ${url}`);
+            const body = req.postData();
+            if (body) console.log(`   Body: ${body.substring(0, 400)}`);
+            renewApiCaptured = { url, body };
         }
     });
     context.on('response', async (res) => {
         if (renewApiCaptured && res.url() === renewApiCaptured.url) {
-            const body = await res.text().catch(() => '');
-            console.log(`📨 API 响应 [${res.status()}]: ${body.substring(0, 300)}`);
-            renewApiCaptured.response = body;
+            const text = await res.text().catch(() => '');
+            console.log(`📨 续期 API 响应 [${res.status()}]: ${text.substring(0, 300)}`);
             renewApiCaptured.status = res.status();
+            renewApiCaptured.response = text;
         }
     });
 
@@ -237,16 +238,14 @@ async function handleTurnstile(page) {
         if (await addBtn.count() === 0) addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         await addBtn.scrollIntoViewIfNeeded();
         await addBtn.click();
-        console.log('已点击，等待弹窗...');
-
+        console.log('已点击，等待 Turnstile 弹出...');
         await page.waitForTimeout(3000);
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare Turnstile 验证...');
+        console.log('第三步：等待 Cloudflare Turnstile 自动完成验证...');
         const captchaPassed = await handleTurnstile(page);
         console.log(`验证处理结果: ${captchaPassed ? '✅ 通过' : '❌ 未通过'}`);
 
-        // 验证通过后等待 form 自动提交和页面响应
         await page.waitForTimeout(5000);
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
 
@@ -261,13 +260,9 @@ async function handleTurnstile(page) {
             if (diff > 60) {
                 console.log(`✅ 续期成功！时间增加了约 ${Math.round(diff / 60)} 分钟。`);
             } else {
-                console.log('❌ 时间未明显增加，续期可能失败。');
-                if (renewApiCaptured) {
-                    console.log(`\n捕获到的 API: ${renewApiCaptured.url}`);
-                    console.log(`响应状态: ${renewApiCaptured.status}`);
-                    console.log(`响应内容: ${renewApiCaptured.response}`);
-                } else {
-                    console.log('未捕获到 g4f.gg 的 POST 请求，说明验证未通过或 form 未提交。');
+                console.log('❌ 时间未明显增加，续期失败。');
+                if (!renewApiCaptured) {
+                    console.log('   续期 POST 请求未发出，说明 Turnstile 验证未通过。');
                 }
             }
         }
@@ -278,5 +273,6 @@ async function handleTurnstile(page) {
     } finally {
         await browser.close();
         try { execSync('pkill -f xray'); } catch (e) {}
+        try { execSync('pkill Xvfb'); } catch (e) {}
     }
 })();
