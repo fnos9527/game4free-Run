@@ -6,10 +6,7 @@ function installDeps() {
     try {
         execSync('npm install --save camoufox@latest', { stdio: 'inherit' });
         execSync('npx camoufox fetch', { stdio: 'inherit' });
-        // 修复权限
-        try {
-            execSync('chmod -R 755 /home/runner/.cache/camoufox', { stdio: 'ignore' });
-        } catch(e) {}
+        execSync('chmod -R 755 /home/runner/.cache/camoufox 2>/dev/null || true', { stdio: 'ignore', shell: true });
         console.log('✅ 依赖安装完成。');
     } catch (e) {
         console.error('❌ 依赖安装失败:', e.message);
@@ -18,7 +15,6 @@ function installDeps() {
 }
 
 function startXvfb() {
-    console.log('正在启动 Xvfb...');
     try {
         execSync('which Xvfb || (apt-get update -qq && apt-get install -y -qq xvfb)', { stdio: 'inherit', shell: true });
         try { execSync('pkill Xvfb', { stdio: 'ignore' }); } catch (e) {}
@@ -92,40 +88,34 @@ async function handleTurnstile(page) {
     const vlessLink = process.env.MY_VLESS_PROXY;
     const isProxyActive = startXrayProxy(vlessLink);
 
-    // 尝试正确的 camoufox API
     let browser, page;
-    let usedCamoufox = false;
 
     try {
-        console.log('正在用 camoufox 启动 Firefox...');
-        // camoufox 的正确用法是通过 playwright 的 firefox
-        const camoufox = require('camoufox');
-        console.log('camoufox exports:', Object.keys(camoufox));
+        console.log('正在用 Camoufox (NewBrowser) 启动...');
+        const { NewBrowser } = require('camoufox');
 
-        // 尝试各种可能的导出形式
-        const launcher = camoufox.launch || camoufox.default?.launch || camoufox.Camoufox?.launch;
-        if (typeof launcher === 'function') {
-            const launchOpts = {
-                headless: !xvfbOk,
-                os: 'windows',
-            };
-            if (isProxyActive) launchOpts.proxy = 'socks5://127.0.0.1:10808';
-            browser = await launcher(launchOpts);
-            page = await browser.newPage();
-            usedCamoufox = true;
-            console.log('✅ Camoufox 启动成功（函数模式）');
-        } else {
-            throw new Error('找不到 launch 函数，exports: ' + Object.keys(camoufox).join(', '));
-        }
+        const opts = {
+            headless: !xvfbOk,
+            os: 'windows',
+        };
+        if (isProxyActive) opts.proxy = 'socks5://127.0.0.1:10808';
+
+        browser = await NewBrowser(opts);
+        page = await browser.newPage();
+        console.log('✅ Camoufox 启动成功！');
+
     } catch (e) {
         console.log('⚠️ Camoufox 失败:', e.message);
-        console.log('降级使用 playwright-extra + stealth (Firefox)...');
+        console.log('降级使用 playwright-extra Firefox...');
 
         try {
-            // 尝试用 playwright 的 firefox 引擎 + stealth
             const { firefox } = require('playwright-extra');
             const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-            firefox.use(StealthPlugin());
+            // stealth 的 user-agent-override 插件在 Firefox 下有 bug，只加其他插件
+            const stealth = StealthPlugin();
+            stealth.enabledEvasions.delete('user-agent-override');
+            firefox.use(stealth);
+
             execSync('npx playwright install firefox', { stdio: 'inherit' });
 
             const launchOpts = { headless: !xvfbOk };
@@ -136,38 +126,34 @@ async function handleTurnstile(page) {
                 viewport: { width: 1366, height: 768 },
                 locale: 'en-US',
                 timezoneId: 'Europe/Amsterdam',
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
             });
             page = await ctx.newPage();
             console.log('✅ playwright-extra Firefox 启动成功');
         } catch (e2) {
-            console.log('⚠️ Firefox 也失败:', e2.message, '最终降级 Chromium...');
+            console.log('⚠️ Firefox 失败:', e2.message, '降级 Chromium...');
             const { chromium } = require('playwright-extra');
             const StealthPlugin = require('puppeteer-extra-plugin-stealth');
             chromium.use(StealthPlugin());
             execSync('npx playwright install chromium', { stdio: 'inherit' });
-
-            const launchOpts = {
-                headless: !xvfbOk,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
-            };
+            const launchOpts = { headless: !xvfbOk, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'] };
             if (isProxyActive) launchOpts.proxy = { server: 'socks5://127.0.0.1:10808' };
             browser = await chromium.launch(launchOpts);
-            const ctx = await browser.newContext({
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                viewport: { width: 1366, height: 768 },
-                locale: 'en-US',
-            });
+            const ctx = await browser.newContext({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36', viewport: { width: 1366, height: 768 }, locale: 'en-US' });
             page = await ctx.newPage();
         }
     }
 
-    // 监听续期 API
+    // 只监听 g4f.gg 自身的 POST（排除广告域名）
     let renewApiCaptured = null;
+    const adDomains = ['3lift', 'google', 'doubleclick', 'amazon-adsystem', 'intergient', 'rapidedge', 'id5-sync', 'crwdcntrl', 'fastclick', 'hadronid'];
     page.on('request', (req) => {
         const url = req.url();
-        if (req.method() === 'POST' && url.includes('g4f.gg') && !url.includes('google')) {
+        if (req.method() === 'POST' && url.includes('g4f.gg') && !adDomains.some(d => url.includes(d))) {
             console.log(`📡 续期 POST: ${url}`);
-            renewApiCaptured = { url, body: req.postData() };
+            const body = req.postData();
+            if (body) console.log(`   Body: ${body.substring(0, 400)}`);
+            renewApiCaptured = { url, body };
         }
     });
     page.on('response', async (res) => {
@@ -180,8 +166,11 @@ async function handleTurnstile(page) {
 
     try {
         console.log('第一步：打开目标网页...');
-        await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
-        await page.waitForTimeout(3000);
+        // 用 domcontentloaded 而非 networkidle，避免广告脚本导致超时
+        await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // 等页面主体内容渲染完成（等到计时器出现）
+        await page.waitForSelector('text=/\\d{2}:\\d{2}:\\d{2}/', { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(2000);
 
         const initialTime = await extractServerTime(page);
         console.log(`⏱️ 初始剩余时间: ${initialTime}`);
@@ -214,7 +203,7 @@ async function handleTurnstile(page) {
             else console.log('❌ 时间未增加，续期失败。');
         }
     } catch (err) {
-        console.error('异常:', err);
+        console.error('异常:', err.message);
         await page.screenshot({ path: 'error_screenshot.png' }).catch(()=>{});
     } finally {
         await browser.close().catch(() => {});
