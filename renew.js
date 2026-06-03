@@ -14,15 +14,12 @@ function installDeps() {
     }
 }
 
-// 安装并启动 Xvfb 虚拟显示器（让浏览器以有头模式运行，绕过 CF 无头检测）
 function startXvfb() {
     console.log('正在安装 Xvfb 虚拟显示器...');
     try {
         execSync('which Xvfb || (apt-get update -qq && apt-get install -y -qq xvfb)', { stdio: 'inherit', shell: true });
-        // 关掉可能残留的旧实例
         try { execSync('pkill Xvfb', { stdio: 'ignore' }); } catch (e) {}
         execSync('sleep 1');
-        // 启动虚拟显示器 :99，分辨率 1366x768，色深 24
         exec('Xvfb :99 -screen 0 1366x768x24 &', { stdio: 'ignore', shell: true }).unref();
         execSync('sleep 2');
         process.env.DISPLAY = ':99';
@@ -96,8 +93,6 @@ async function extractServerTime(page) {
     }
 }
 
-// Turnstile Managed Mode：不需要点击，只需等待 token 自动写入
-// 若 token 迟迟不来（IP 被拒），则尝试 reset 后再等一次
 async function handleTurnstile(page) {
     console.log('等待 Turnstile Managed Mode 自动完成验证（token 写入 input）...');
 
@@ -109,16 +104,14 @@ async function handleTurnstile(page) {
         return false;
     }, { timeout });
 
-    // 第一次等待：45 秒
     try {
         await waitForToken(45000);
         console.log('🎉 Turnstile token 已自动写入，验证通过！');
         return true;
     } catch (e) {
-        console.log('⚠️ 45 秒内未获得 token，尝试调用 turnstile.reset() 重置后再等...');
+        console.log('⚠️ 45 秒内未获得 token，尝试 reset 后再等...');
     }
 
-    // 尝试 reset，让 Turnstile 重新评估
     await page.evaluate(() => {
         try {
             if (window.turnstile && window._captchaWidgetId !== undefined) {
@@ -129,21 +122,18 @@ async function handleTurnstile(page) {
 
     await page.waitForTimeout(3000);
 
-    // 第二次等待：45 秒
     try {
         await waitForToken(45000);
         console.log('🎉 reset 后 Turnstile token 写入成功！');
         return true;
     } catch (e) {
-        console.log('❌ 两次等待均超时，IP 可能被 CF 拒绝。');
+        console.log('❌ 两次等待均超时，验证未通过。');
         return false;
     }
 }
 
 (async () => {
     installDeps();
-
-    // 启动 Xvfb，让浏览器以有头模式运行
     const xvfbOk = startXvfb();
 
     const { chromium } = require('playwright-extra');
@@ -154,7 +144,6 @@ async function handleTurnstile(page) {
     const isProxyActive = startXrayProxy(vlessLink);
 
     const launchOptions = {
-        // Xvfb 成功时用有头模式，否则降级无头
         headless: !xvfbOk,
         args: [
             '--no-sandbox',
@@ -162,23 +151,21 @@ async function handleTurnstile(page) {
             '--disable-blink-features=AutomationControlled',
             '--disable-features=IsolateOrigins,site-per-process',
             '--blink-settings=imagesEnabled=true',
+            // ── 关键：强制覆盖 UA Client Hints，抹掉 HeadlessChrome 标记 ──
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
         ]
     };
 
-    if (xvfbOk) {
-        // 有头模式下明确指定显示器
-        launchOptions.args.push('--display=:99');
-        console.log('✅ 浏览器将以有头模式运行（Xvfb :99）');
-    } else {
-        console.log('⚠️ 浏览器将以无头模式运行');
-    }
-
+    if (xvfbOk) launchOptions.args.push('--display=:99');
     if (isProxyActive) {
         console.log('配置 Playwright 浏览器走本地代理: socks5://127.0.0.1:10808');
         launchOptions.proxy = { server: 'socks5://127.0.0.1:10808' };
     }
 
     const browser = await chromium.launch(launchOptions);
+
+    // ── 关键：用 userAgentMetadata 覆盖 UA Client Hints ──────────────────────
+    // 这会让 navigator.userAgentData 返回正常 Chrome 的值，而非 HeadlessChrome
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
         viewport: { width: 1366, height: 768 },
@@ -190,9 +177,79 @@ async function handleTurnstile(page) {
         isMobile: false,
     });
 
+    // 通过 CDP 直接覆盖 userAgentMetadata（这是 stealth 插件没有做到的）
+    const cdpSession = await context.newCDPSession(await context.newPage());
+    await cdpSession.send('Network.setUserAgentOverride', {
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        platform: 'Win32',
+        userAgentMetadata: {
+            // 完整伪造 brands 列表，不含任何 Headless 字样
+            brands: [
+                { brand: 'Google Chrome', version: '125' },
+                { brand: 'Chromium', version: '125' },
+                { brand: 'Not=A?Brand', version: '8' },
+            ],
+            fullVersionList: [
+                { brand: 'Google Chrome', version: '125.0.0.0' },
+                { brand: 'Chromium', version: '125.0.0.0' },
+                { brand: 'Not=A?Brand', version: '8.0.0.0' },
+            ],
+            platform: 'Windows',
+            platformVersion: '10.0.0',
+            architecture: 'x86',
+            model: '',
+            mobile: false,
+            bitness: '64',
+            wow64: false,
+        }
+    }).catch(e => console.log('⚠️ CDP userAgent 覆盖失败（非致命）:', e.message));
+    await cdpSession.detach().catch(() => {});
+
     await context.addInitScript(() => {
+        // 覆盖 navigator.userAgentData（JS 层面的 Client Hints）
+        if (navigator.userAgentData) {
+            Object.defineProperty(navigator, 'userAgentData', {
+                get: () => ({
+                    brands: [
+                        { brand: 'Google Chrome', version: '125' },
+                        { brand: 'Chromium', version: '125' },
+                        { brand: 'Not=A?Brand', version: '8' },
+                    ],
+                    mobile: false,
+                    platform: 'Windows',
+                    getHighEntropyValues: (hints) => Promise.resolve({
+                        brands: [
+                            { brand: 'Google Chrome', version: '125' },
+                            { brand: 'Chromium', version: '125' },
+                            { brand: 'Not=A?Brand', version: '8' },
+                        ],
+                        fullVersionList: [
+                            { brand: 'Google Chrome', version: '125.0.0.0' },
+                            { brand: 'Chromium', version: '125.0.0.0' },
+                            { brand: 'Not=A?Brand', version: '8.0.0.0' },
+                        ],
+                        mobile: false,
+                        platform: 'Windows',
+                        platformVersion: '10.0.0',
+                        architecture: 'x86',
+                        bitness: '64',
+                        model: '',
+                        uaFullVersion: '125.0.0.0',
+                        wow64: false,
+                    }),
+                    toJSON: () => ({
+                        brands: [{ brand: 'Google Chrome', version: '125' }],
+                        mobile: false,
+                        platform: 'Windows',
+                    }),
+                })
+            });
+        }
+        // 其他反检测补丁
         if (!window.chrome) window.chrome = { runtime: {} };
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        Object.defineProperty(navigator, 'plugins', { get: () => ({ length: 5, item: () => null, namedItem: () => null, refresh: () => {} }) });
         const origQuery = navigator.permissions?.query?.bind(navigator.permissions);
         if (origQuery) {
             navigator.permissions.query = (p) =>
@@ -202,7 +259,7 @@ async function handleTurnstile(page) {
         }
     });
 
-    // 只监听 g4f.gg 自身的 POST（排除 GA/广告）
+    // 监听 g4f.gg 的 POST
     let renewApiCaptured = null;
     context.on('request', (req) => {
         const url = req.url();
@@ -222,7 +279,9 @@ async function handleTurnstile(page) {
         }
     });
 
-    const page = await context.newPage();
+    // 用已有的 context 新建真正的 page（之前那个 CDP 用的 page 关掉）
+    const pages = context.pages();
+    const page = pages[0] || await context.newPage();
 
     try {
         console.log('第一步：打开目标网页...');
@@ -261,9 +320,7 @@ async function handleTurnstile(page) {
                 console.log(`✅ 续期成功！时间增加了约 ${Math.round(diff / 60)} 分钟。`);
             } else {
                 console.log('❌ 时间未明显增加，续期失败。');
-                if (!renewApiCaptured) {
-                    console.log('   续期 POST 请求未发出，说明 Turnstile 验证未通过。');
-                }
+                if (!renewApiCaptured) console.log('   续期 POST 未发出，Turnstile 验证未通过。');
             }
         }
 
