@@ -1,7 +1,6 @@
 const { execSync, exec } = require('child_process');
 const fs = require('fs');
 
-// ─── 安装依赖 ─────────────────────────────────────────────────────────────────
 function installDeps() {
     const needed = ['playwright-extra', 'puppeteer-extra-plugin-stealth'];
     console.log('正在安装依赖包...');
@@ -15,7 +14,6 @@ function installDeps() {
     }
 }
 
-// ─── 启动 Xray 代理 ───────────────────────────────────────────────────────────
 function startXrayProxy(vlessLink) {
     if (!vlessLink) {
         console.log('⚠️ 未检测到 MY_VLESS_PROXY 变量，将不使用代理运行。');
@@ -30,7 +28,6 @@ function startXrayProxy(vlessLink) {
         console.error('❌ 下载或解压 Xray 失败:', err.message);
         return false;
     }
-
     console.log('正在解析 VLESS 链接并生成 config.json...');
     try {
         const url = new URL(vlessLink);
@@ -55,11 +52,9 @@ function startXrayProxy(vlessLink) {
         console.error('❌ 换算配置失败:', err.message);
         return false;
     }
-
     console.log('在后台启动 Xray 服务...');
     exec('./xray -config config.json > xray.log 2>&1').unref();
     execSync('sleep 3');
-
     console.log('验证代理是否成功畅通...');
     try {
         execSync('curl --socks5-hostname 127.0.0.1:10808 -m 5 https://www.cloudflare.com/cdn-cgi/trace', { stdio: 'ignore' });
@@ -71,7 +66,6 @@ function startXrayProxy(vlessLink) {
     }
 }
 
-// ─── 提取页面时间字符串 ────────────────────────────────────────────────────────
 async function extractServerTime(page) {
     try {
         const text = await page.innerText('body');
@@ -82,115 +76,36 @@ async function extractServerTime(page) {
     }
 }
 
-// ─── 拦截并重放续期 API 请求（核心方案） ──────────────────────────────────────
-async function interceptAndReplay(page, isProxyActive) {
-    let capturedRequest = null;
+// ─── 诊断函数：打印页面所有 iframe 和所有网络请求 ──────────────────────────────
+async function diagnose(page) {
+    // 1. 打印所有 iframe 的 src
+    const iframeSrcs = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('iframe')).map(f => f.src || f.getAttribute('src') || '(no src)');
+    });
+    console.log('\n════ 页面中所有 iframe ════');
+    if (iframeSrcs.length === 0) {
+        console.log('  (未发现任何 iframe)');
+    } else {
+        iframeSrcs.forEach((src, i) => console.log(`  [${i}] ${src}`));
+    }
+    console.log('════════════════════════════\n');
 
-    // 监听所有网络请求，抓取续期相关的 API 调用
-    page.on('request', (request) => {
-        const url = request.url();
-        const method = request.method();
-        // 续期请求通常是 POST，且包含 renew / extend / add / timer 等关键词
-        if (method === 'POST' && (
-            url.includes('renew') ||
-            url.includes('extend') ||
-            url.includes('add') ||
-            url.includes('timer') ||
-            url.includes('vote') ||
-            url.includes('bump') ||
-            url.includes('keep') ||
-            url.includes('g4f') ||
-            url.includes('gaming4free') ||
-            url.includes('api')
-        )) {
-            const postData = request.postData();
-            const headers = request.headers();
-            console.log(`📡 捕获到 API 请求: [${method}] ${url}`);
-            if (postData) console.log(`   请求体: ${postData.substring(0, 200)}`);
-            capturedRequest = { url, method, postData, headers };
+    // 2. 打印页面 HTML 中包含 "turnstile" / "cloudflare" / "challenge" 的片段
+    const html = await page.content();
+    const lines = html.split('\n');
+    const keywords = ['turnstile', 'cloudflare', 'challenge', 'cf-', 'cfturnstile'];
+    console.log('════ HTML 中含关键词的行 ════');
+    let found = 0;
+    lines.forEach((line, i) => {
+        if (keywords.some(k => line.toLowerCase().includes(k))) {
+            console.log(`  L${i + 1}: ${line.trim().substring(0, 200)}`);
+            found++;
         }
     });
-
-    // 同时监听响应，确认哪个请求成功了
-    page.on('response', async (response) => {
-        const url = response.url();
-        const status = response.status();
-        if (capturedRequest && url === capturedRequest.url) {
-            try {
-                const body = await response.text();
-                console.log(`📨 API 响应 [${status}]: ${body.substring(0, 300)}`);
-                capturedRequest.responseStatus = status;
-                capturedRequest.responseBody = body;
-            } catch (e) {}
-        }
-    });
-
-    return {
-        getCaptured: () => capturedRequest
-    };
+    if (found === 0) console.log('  (未发现相关关键词)');
+    console.log('════════════════════════════\n');
 }
 
-// ─── 处理 Cloudflare Turnstile 验证 ───────────────────────────────────────────
-async function handleTurnstile(page) {
-    console.log('正在等待 Cloudflare Turnstile iframe 出现（最多 20 秒）...');
-
-    const iframeHandle = await page.waitForSelector(
-        'iframe[src*="challenges.cloudflare.com"]',
-        { timeout: 20000 }
-    ).catch(() => null);
-
-    if (!iframeHandle) {
-        console.log('✅ 未检测到 Turnstile iframe，已被直接放行。');
-        return true;
-    }
-
-    console.log('检测到 Turnstile iframe，等待完全渲染（4 秒）...');
-    await page.waitForTimeout(4000);
-
-    const frame = await iframeHandle.contentFrame();
-    if (!frame) {
-        console.log('⚠️ 无法切入 iframe，改用外部坐标点击...');
-        const box = await iframeHandle.boundingBox();
-        if (box) {
-            await page.mouse.click(box.x + box.width * 0.12, box.y + box.height / 2, { delay: 120 });
-            await page.waitForTimeout(30000);
-        }
-        return false;
-    }
-
-    const checkbox = await frame.waitForSelector('input[type="checkbox"]', { timeout: 6000 }).catch(() => null);
-    if (checkbox) {
-        console.log('找到 checkbox，执行点击...');
-        await checkbox.click({ delay: 100 });
-    } else {
-        console.log('未找到 checkbox，点击 widget 左侧...');
-        const bodyBox = await frame.locator('body').boundingBox().catch(() => null);
-        if (bodyBox) {
-            await frame.locator('body').click({
-                position: { x: Math.min(40, bodyBox.width * 0.12), y: bodyBox.height / 2 },
-                delay: 100
-            });
-        }
-    }
-
-    console.log('已点击，等待验证结果（最多 40 秒）...');
-
-    await page.waitForSelector('iframe[src*="challenges.cloudflare.com"]', {
-        state: 'detached',
-        timeout: 40000
-    }).catch(() => null);
-
-    const stillThere = await page.$('iframe[src*="challenges.cloudflare.com"]');
-    if (!stillThere) {
-        console.log('🎉 Cloudflare Turnstile 验证通过！');
-        return true;
-    } else {
-        console.log('⚠️ 验证框依然存在，验证未通过。');
-        return false;
-    }
-}
-
-// ─── 主流程 ───────────────────────────────────────────────────────────────────
 (async () => {
     installDeps();
 
@@ -203,13 +118,7 @@ async function handleTurnstile(page) {
 
     const launchOptions = {
         headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--blink-settings=imagesEnabled=true',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-features=IsolateOrigins,site-per-process',
-        ]
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--blink-settings=imagesEnabled=true', '--disable-blink-features=AutomationControlled']
     };
     if (isProxyActive) {
         console.log('配置 Playwright 浏览器走本地代理: socks5://127.0.0.1:10808');
@@ -223,27 +132,23 @@ async function handleTurnstile(page) {
         locale: 'en-US',
         timezoneId: 'Europe/Amsterdam',
         extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
-        javaScriptEnabled: true,
-        hasTouch: false,
-        isMobile: false,
     });
 
     await context.addInitScript(() => {
         if (!window.chrome) window.chrome = { runtime: {} };
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        const origQuery = navigator.permissions?.query?.bind(navigator.permissions);
-        if (origQuery) {
-            navigator.permissions.query = (p) =>
-                p.name === 'notifications'
-                    ? Promise.resolve({ state: Notification.permission })
-                    : origQuery(p);
-        }
+    });
+
+    // 监听所有网络请求（不过滤，全部打印）
+    const allRequests = [];
+    context.on('request', (req) => {
+        allRequests.push({ method: req.method(), url: req.url() });
     });
 
     const page = await context.newPage();
 
     try {
-        console.log('第一步：正在打开目标网页...');
+        console.log('第一步：打开目标网页...');
         await page.goto('https://g4f.gg/myserverbbr', { waitUntil: 'networkidle', timeout: 60000 });
         await page.waitForTimeout(3000);
 
@@ -251,57 +156,30 @@ async function handleTurnstile(page) {
         console.log(`⏱️ 网页初始剩余时间: ${initialTime}`);
         await page.screenshot({ path: '1_initial_status.png' });
 
-        // 开始监听网络请求
-        const { getCaptured } = await interceptAndReplay(page, isProxyActive);
+        // 诊断：点击前的页面状态
+        console.log('\n【点击按钮前的页面诊断】');
+        await diagnose(page);
 
         console.log('第二步：点击 + ADD 90 MIN 按钮...');
         let addBtn = page.locator('text="+ ADD 90 MIN"').first();
         if (await addBtn.count() === 0) addBtn = page.locator('button:has-text("ADD 90 MIN")').first();
         await addBtn.scrollIntoViewIfNeeded();
         await addBtn.click();
-        console.log('已成功触发点击动作。');
+        console.log('已点击，等待 6 秒让弹窗和 iframe 完全加载...');
 
-        // 等久一点让 iframe 有时间注入
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(6000);
         await page.screenshot({ path: '2_after_click_popup.png' });
 
-        console.log('第三步：处理 Cloudflare Turnstile 验证...');
-        const captchaPassed = await handleTurnstile(page);
-        console.log(`验证处理结果: ${captchaPassed ? '通过' : '未确认通过'}`);
+        // 诊断：点击后的页面状态（最关键）
+        console.log('\n【点击按钮后的页面诊断】');
+        await diagnose(page);
 
-        // 等待可能的后续 API 请求完成
-        await page.waitForTimeout(5000);
+        // 打印截至目前所有网络请求
+        console.log('\n════ 截至目前所有网络请求 ════');
+        allRequests.forEach(r => console.log(`  [${r.method}] ${r.url}`));
+        console.log('════════════════════════════\n');
+
         await page.screenshot({ path: '3_after_captcha_attempt.png' });
-
-        // 打印捕获到的 API 请求信息（用于下一步分析）
-        const captured = getCaptured();
-        if (captured) {
-            console.log('\n════════════════════════════════════════');
-            console.log('📋 捕获到续期 API 请求，详情如下:');
-            console.log(`   URL: ${captured.url}`);
-            console.log(`   Method: ${captured.method}`);
-            console.log(`   Body: ${captured.postData || '(无请求体)'}`);
-            console.log(`   响应状态: ${captured.responseStatus || '未知'}`);
-            console.log(`   响应内容: ${captured.responseBody || '未知'}`);
-            console.log('════════════════════════════════════════\n');
-        } else {
-            console.log('\n⚠️ 未捕获到续期 API 请求，可能验证未通过或请求 URL 特征未匹配。');
-        }
-
-        console.log('第四步：检查续期后的时间状态...');
-        await page.waitForTimeout(3000);
-        const endTime = await extractServerTime(page);
-        console.log(`🎉 脚本执行完毕。更新后的服务器剩余时间为: ${endTime}`);
-
-        const parseSeconds = (t) => t.split(':').map(Number).reduce((a, v, i) => a + v * [3600, 60, 1][i], 0);
-        if (initialTime !== '无法提取具体数字' && endTime !== '无法提取具体数字') {
-            const diff = parseSeconds(endTime) - parseSeconds(initialTime);
-            if (diff > 60) {
-                console.log(`✅ 续期成功！时间增加了约 ${Math.round(diff / 60)} 分钟。`);
-            } else {
-                console.log('❌ 时间未明显增加，续期可能失败，请检查截图。');
-            }
-        }
 
     } catch (error) {
         console.error('流程中遭遇异常中止:', error);
