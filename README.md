@@ -1,3 +1,4 @@
+<img width="1871" height="878" alt="2026-07-05_21-48" src="https://github.com/user-attachments/assets/7dc56df4-c316-43b2-a0d8-a8fb1c3c4f65" />
 # game4free-Run
 cron-job.org触发URL 填：
 ```
