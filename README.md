@@ -1,22 +1,4 @@
 # game4free-Run
-cron-job.org触发URL 填：
-```
-https://api.github.com/repos/fnos9527/game4free-Run/dispatches
-```
-Header 加：
-
-Authorization: Bearer 你的GitHub_Token
-
-Content-Type: application/json
-
-Accept: application/vnd.github+json
-
-Body 填：
-```
-{
-  "event_type": "renew_trigger"
-}
-```
 
 流程图
 ```
